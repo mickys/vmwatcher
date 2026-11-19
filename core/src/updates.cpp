@@ -22,7 +22,8 @@ bool parse(const std::string& value, Version& out) {
 
 std::string checkTags() {
   // All arguments are fixed. Bound network time and consume stdout to EOF.
-  FILE* pipe = popen("timeout -k 2 20 git ls-remote --tags --refs git@github.com:mickys/vmwatcher.git 'refs/tags/v*'", "re");
+  FILE* pipe = popen("GIT_TERMINAL_PROMPT=0 timeout -k 2 20 git -c credential.helper= ls-remote --tags --refs "
+                     "https://github.com/mickys/vmwatcher.git 'refs/tags/v*'", "re");
   if (!pipe) return "Could not start the GitHub update check.";
   Version latest{}, installed{};
   std::string tag;

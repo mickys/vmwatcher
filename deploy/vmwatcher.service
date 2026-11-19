@@ -9,7 +9,6 @@ StartLimitIntervalSec=0
 Type=simple
 WorkingDirectory=@ROOT@/current
 ExecStart=@ROOT@/current/core/build/vmwatcher serve --bind @BIND@ --port @PORT@ --allow "@ALLOWED_NAMES@" --data @ROOT@/data --web @ROOT@/current/web --tls-cert @ROOT@/tls/server.pem --tls-key @ROOT@/tls/server.key
-Environment="GIT_SSH_COMMAND=/usr/bin/ssh -F /dev/null -o BatchMode=yes -o ConnectTimeout=8 -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=@ROOT@/current/deploy/github-known-hosts -i @ROOT@/updates/github"
 Restart=always
 RestartSec=3
 UMask=0077

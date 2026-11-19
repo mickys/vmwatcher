@@ -113,6 +113,5 @@ worker-based WASM/WebGL renderer are future work.
 
 The central daemon checks stable GitHub tags of the form `vMAJOR.MINOR.PATCH`
 at startup and every six hours. Settings → About shows the installed version
-and offers an on-demand check. For private repositories, register the installed
-service's `updates/github.pub` as a read-only GitHub deploy key. Checking
-downloads tag references only. Deploy a new version using the installer.
+and offers an on-demand check. The daemon reads public tag references over HTTPS without credentials.
+Deploy a new version using the installer.

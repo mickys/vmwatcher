@@ -30,7 +30,7 @@ mkdir -p .work
 if [[ $role == central ]]; then
   (cd web && npm ci && npm test && npm run build)
   # The web bundle is unpacked as <release>/web.
-  tar -czf .work/release.tar.gz core/Makefile core/src core/tests scripts/make-certs.sh deploy/github-known-hosts --transform 's,^web/dist,web,' web/dist
+  tar -czf .work/release.tar.gz core/Makefile core/src core/tests scripts/make-certs.sh --transform 's,^web/dist,web,' web/dist
 else
   tar -czf .work/release.tar.gz core/Makefile core/src core/tests
 fi
@@ -46,8 +46,6 @@ if [[ $role == central ]]; then
   echo "== Certificates"
   ssh "$host" "set -e; if [ -f '$root/tls/server.pem' ]; then echo 'Keeping the existing certificate in $root/tls'
     else bash '$root/releases/$release/scripts/make-certs.sh' '$root/tls' '$bind' \"\$(hostname -s)\" \"\$(hostname -f)\"; fi"
-  ssh "$host" "set -e; umask 077; mkdir -p '$root/updates'; if ! test -f '$root/updates/github'; then
-    ssh-keygen -q -t ed25519 -N '' -C vmwatcher-updates -f '$root/updates/github'; fi"
   sans=$(ssh "$host" "openssl x509 -in '$root/tls/server.pem' -noout -ext subjectAltName")
   allowed_names=$(sed '1d' <<< "$sans" | tr ',' '\n' | sed -nE 's/^[[:space:]]*DNS:([a-zA-Z0-9.-]+)[[:space:]]*$/\1/p' | paste -sd, -)
 
