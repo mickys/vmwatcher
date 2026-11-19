@@ -1,0 +1,23 @@
+node_modules/
+dist/
+.work/
+core/build*/
+
+# Local viewer state, authentication, captures, and deployment credentials.
+/data/
+/agent-data/
+/tls/
+/updates/
+/audits/
+/captures/
+.env
+.env.*
+!.env.example
+*.key
+*.p12
+*.pfx
+
+# Workstation-specific operating instructions and legacy runtime state.
+/AGENTS.md
+/legacy/data/
+/legacy/validation/

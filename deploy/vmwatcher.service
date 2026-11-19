@@ -1,0 +1,26 @@
+[Unit]
+Description=VM Watcher central service (web UI, settings, sign-in)
+Wants=network-online.target
+After=network-online.target libvirtd.service
+RequiresMountsFor=@ROOT@
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+WorkingDirectory=@ROOT@/current
+ExecStart=@ROOT@/current/core/build/vmwatcher serve --bind @BIND@ --port @PORT@ --allow "@ALLOWED_NAMES@" --data @ROOT@/data --web @ROOT@/current/web --tls-cert @ROOT@/tls/server.pem --tls-key @ROOT@/tls/server.key
+Environment="GIT_SSH_COMMAND=/usr/bin/ssh -F /dev/null -o BatchMode=yes -o ConnectTimeout=8 -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=@ROOT@/current/deploy/github-known-hosts -i @ROOT@/updates/github"
+Restart=always
+RestartSec=3
+UMask=0077
+NoNewPrivileges=true
+ProtectSystem=strict
+# Remote libvirt hosts (qemu+ssh://) use this account's SSH keys. Change this to
+# "read-only" if you add such a host; agents and the local hypervisor do not need it.
+ProtectHome=true
+ReadWritePaths=@ROOT@/data
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+LimitNOFILE=4096
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,21 @@
+[Unit]
+Description=VM Watcher agent (gives the central service access to this hypervisor)
+Wants=network-online.target
+After=network-online.target libvirtd.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+ExecStart=@ROOT@/current/core/build/vmwatcher agent --bind @BIND@ --port @PORT@ --data @ROOT@/agent-data
+Restart=always
+RestartSec=3
+UMask=0077
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=@ROOT@/agent-data
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+LimitNOFILE=4096
+
+[Install]
+WantedBy=multi-user.target
