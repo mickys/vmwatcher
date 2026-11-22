@@ -11,6 +11,8 @@
 namespace vmw {
 namespace {
 
+constexpr int64_t kMinSessionHours = 7 * 24;
+constexpr int64_t kMaxSessionHours = 30 * 24;
 const char* const kCookie = "vmw_session";
 
 bool hostIdOk(const std::string& id) {
@@ -133,12 +135,15 @@ class Central : public Service {
     const Json& s = config_["settings"];
     Json allowed = Json::Array{};
     for (const Json& h : s["allowedHosts"].arr()) allowed.push(h);
+    auto perSession = s["maxLivePerSession"].integer(16);
+    // Older saves persisted the original default alongside unrelated settings.
+    if (perSession == 6 && !s["liveLimitsUpdated"].boolean()) perSession = 16;
     return obj({
         {"videoEncoder", s["videoEncoder"].str("vnc")},
         {"siteName", "VM Watcher"},
-        {"sessionHours", s["sessionHours"].integer(12)},
+        {"sessionHours", std::clamp(s["sessionHours"].integer(kMinSessionHours), kMinSessionHours, kMaxSessionHours)},
         {"previewSeconds", s["previewSeconds"].integer(10)},
-        {"maxLivePerSession", s["maxLivePerSession"].integer(6)},
+        {"maxLivePerSession", perSession},
         {"maxLiveTotal", s["maxLiveTotal"].integer(24)},
         {"controlEnabled", s["controlEnabled"].boolean(true)},
         {"allowedHosts", allowed},
@@ -511,7 +516,7 @@ class Central : public Service {
       if (req.method != "POST") return Response::error(405, "Use POST");
       if (!settings()["controlEnabled"].boolean()) return Response::error(403, "Keyboard and mouse control is turned off in Settings");
       Json body = Json::parse(req.body);
-      if (!body["head"].isInt()) fail("Monitor unavailable");
+      if (!body["head"].isInt() || body["head"].integer() < 0 || body["head"].integer() > 3) fail("Monitor unavailable");
       api->input(id, int(body["head"].integer()), body["events"]);
       return Response::json(obj({{"ok", true}}));
     }
@@ -544,7 +549,8 @@ class Central : public Service {
       }
     } release{*this, key};
     if (action == "video.mp4") {
-      streamVideo(conn, *hostApi(host), id, limits["videoEncoder"].str());
+      std::string encoder = limits["videoEncoder"].str();
+      streamVideo(conn, *hostApi(host), id, encoder == "vnc" ? "software-h264" : encoder);
       return Response::taken();
     }
     std::unique_ptr<Conn> console = hostApi(host)->console(id);
@@ -776,9 +782,10 @@ class Central : public Service {
           fail(std::string(name) + " must be between " + std::to_string(low) + " and " + std::to_string(high));
         next.set(name, body[name].integer());
       };
-      number("sessionHours", 1, 720);
+      number("sessionHours", kMinSessionHours, kMaxSessionHours);
       number("previewSeconds", 0, 300);
       number("maxLivePerSession", 1, 16);
+      next.set("liveLimitsUpdated", true);
       number("maxLiveTotal", 1, 64);
       if (body.has("videoEncoder")) {
         if (!videoEncoders().has(body["videoEncoder"].str())) fail("Video encoder unavailable");

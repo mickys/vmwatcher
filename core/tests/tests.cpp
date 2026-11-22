@@ -1,5 +1,6 @@
 // Unit and integration tests. No test framework: each check reports its line.
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #include <cstdio>
@@ -377,10 +378,15 @@ static void testServices() {
     raw->readUntil("\r\n\r\n", 4000, head);
     size_t at = head.find("vmw_session=");
     CHECK(at != std::string::npos && head.find("HttpOnly") != std::string::npos && head.find("SameSite=Strict") != std::string::npos);
+    CHECK(head.find("Max-Age=604800") != std::string::npos);
     if (at != std::string::npos) c.cookie = head.substr(at, head.find(';', at) - at);
   }
   Json session = c.json("GET", "/api/session");
   CHECK(session["authenticated"].boolean() && !session["setupRequired"].boolean() && session["settings"]["previewSeconds"].integer() == 10);
+
+  CHECK(session["settings"]["sessionHours"].integer() == 168);
+  CHECK(session["settings"]["maxLivePerSession"].integer() == 16);
+  CHECK(c.call("PUT", "/api/settings", R"({"sessionHours":167})").status == 400);
 
   // The demo host is local; add the agent as a second host.
   Json before = c.json("GET", "/api/vms");
@@ -501,6 +507,46 @@ static void testServices() {
   removeTree(root);
 }
 
+static void testPhysicalAgent() {
+  char cwd[4096];
+  CHECK(getcwd(cwd, sizeof cwd) != nullptr);
+  std::string root = std::string(cwd) + "/build/physical-test-" + randomHex(4);
+  makeDirs(root);
+  std::string capture = root + "/capture", hid = root + "/hid";
+  writeFileAtomic(root + "/sample.ppm", "P6\n2 1\n255\n" + bytes({255, 0, 0, 0, 255, 0}));
+  writeFileAtomic(capture, "#!/bin/sh\nexec cat \"$(dirname \"$0\")/sample.ppm\"\n");
+  writeFileAtomic(hid, "#!/bin/sh\nexec cat > \"$(dirname \"$0\")/events.json\"\n");
+  CHECK(chmod(capture.c_str(), 0700) == 0 && chmod(hid.c_str(), 0700) == 0);
+  const std::string id = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+  const std::string viewOnly = "bbbbbbbb-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+  Json sources = Json::Array{};
+  sources.push(obj({{"id", id}, {"name", "Physical test"}, {"capture", capture}, {"hid", hid}}));
+  sources.push(obj({{"id", viewOnly}, {"name", "Capture only"}, {"capture", capture}}));
+  writeFileAtomic(root + "/physical.json", obj({{"sources", sources}}).dump());
+
+  Options options;
+  options.data = root;
+  auto agent = makeAgent(options);
+  Server server([&](Request& req, Conn& conn) { return agent->handle(req, conn); });
+  int port = server.listen("127.0.0.1", 0);
+  server.start();
+  CHECK(httpCall(Url{"127.0.0.1", port}, "GET", "/agent/v1/vms").status == 401);
+  auto host = makeAgentHost("http://127.0.0.1:" + std::to_string(port), agentToken(root, false));
+  CHECK(host->info()["mode"].str() == "physical");
+  CHECK(host->inventory().arr().size() == 2 && host->inventory().arr()[0]["kind"].str() == "physical");
+  CHECK(decodeScreenshot(host->headPng(id, 0, true)).rgb == bytes({255, 0, 0, 0, 255, 0}));
+  CHECK(decodeScreenshot(host->previewPng(id, 128)).width == 2);
+  THROWS(host->headPng(id, 1, false));
+  Json events = Json::parse(R"([{"type":"abs","data":{"axis":"x","value":1234}}])");
+  THROWS(host->input(id, 0, Json::parse(R"([{"type":"invalid"}])")));
+  CHECK(!fileExists(root + "/events.json"));
+  host->input(id, 0, events);
+  CHECK(Json::parse(readFile(root + "/events.json"))["events"].dump() == events.dump());
+  THROWS(host->input(viewOnly, 0, events));
+  server.stop();
+  removeTree(root);
+}
+
 int main() {
   testCrypto();
   testJson();
@@ -511,6 +557,7 @@ int main() {
   testWebSocket();
   testBridge();
   testServices();
+  testPhysicalAgent();
   printf("%d checks, %d failed\n", checks, failures);
   return failures ? 1 : 0;
 }

@@ -10,15 +10,27 @@ import { byState, canLive, isActive, liveNote, monitorsOf, parseKeys, wallGrid }
 
 const stored = (name, legacy) => new Set(parseKeys(localStorage.getItem(name) ?? localStorage.getItem(legacy)));
 
+function storedLayouts() {
+  try {
+    return JSON.parse(localStorage.getItem("vmw-layouts")) || {};
+  } catch {
+    return {};
+  }
+}
+
 export function Wall() {
-  const { session, inventory, groups, setGroups, notify, bar } = useShell();
+  const { session, inventory, groups, setGroups, notify, bar, captureSlot } = useShell();
   const encoder = session.settings.videoEncoder;
   const supportsLive = (vm) => !liveNote(vm, encoder);
-  const maxLive = session.settings.maxLivePerSession;
+  const maxLive = Math.min(session.settings.maxLivePerSession, session.settings.maxLiveTotal ?? Infinity);
   const [selected, setSelected] = useState(() => stored("vmw-selected", "vmwall-selected"));
   // What was ticked before a group was shown; restored when it is toggled off.
   const [manual, setManual] = useState(() => stored("vmw-manual", "vmwall-manual"));
   const [group, setGroup] = useState(() => localStorage.getItem("vmw-group") ?? localStorage.getItem("vmwall-group") ?? "");
+  const [layouts, setLayouts] = useState(storedLayouts);
+  const dragging = useRef(null);
+  const [resizing, setResizing] = useState(null);
+  const layout = layouts[group];
   const [live, setLive] = useState(() => new Set());
   const [rate, setRate] = useState(session.settings.previewSeconds * 1000);
   const [query, setQuery] = useState("");
@@ -36,10 +48,51 @@ export function Wall() {
   }, [selected, manual, group]);
   useEffect(() => localStorage.setItem("vmw-sidebar", sidebar ? "1" : "0"), [sidebar]);
 
-  const shown = useMemo(
-    () => inventory.vms.filter((vm) => selected.has(vm.key)).sort(byState),
-    [inventory.vms, selected],
-  );
+  useEffect(() => localStorage.setItem("vmw-layouts", JSON.stringify(layouts)), [layouts]);
+  const order = layout?.order;
+  const shown = useMemo(() => {
+    const ranks = new Map((order || []).map((key, index) => [key, index]));
+    return inventory.vms.filter((vm) => selected.has(vm.key)).sort((a, b) =>
+      (ranks.get(a.key) ?? Infinity) - (ranks.get(b.key) ?? Infinity) || byState(a, b));
+  }, [inventory.vms, selected, order]);
+
+  function moveTile(key, target) {
+    if (key === target) return;
+    const keys = shown.map((vm) => vm.key);
+    const from = keys.indexOf(key), to = keys.indexOf(target);
+    if (from < 0 || to < 0) return;
+    keys.splice(from, 1);
+    keys.splice(to, 0, key);
+    setLayouts((old) => ({ ...old, [group]: { ...old[group], order: keys } }));
+  }
+
+  function startMove(event, key) {
+    if (!event.isPrimary || event.button !== 0) return;
+    dragging.current = { key, x: event.clientX, y: event.clientY };
+    wallRef.current.setPointerCapture(event.pointerId);
+  }
+
+  function dragMove(event) {
+    const drag = dragging.current;
+    if (!drag || Math.hypot(event.clientX - drag.x, event.clientY - drag.y) < 8) return;
+    const tile = document.elementFromPoint(event.clientX, event.clientY)?.closest("[data-tile-key]");
+    if (!tile || !wallRef.current.contains(tile) || tile.dataset.tileKey === drag.key) return;
+    drag.x = event.clientX;
+    drag.y = event.clientY;
+    moveTile(drag.key, tile.dataset.tileKey);
+  }
+
+  function stopMove() {
+    dragging.current = null;
+  }
+
+  function saveTileSize(key, dimensions) {
+    setLayouts((old) => ({
+      ...old,
+      [group]: { ...old[group], sizes: { ...old[group]?.sizes, [key]: dimensions } },
+    }));
+  }
+
   // Live consoles and audio only make sense for VMs that are on the wall.
   useEffect(() => {
     const keys = new Set(shown.map((vm) => vm.key));
@@ -60,6 +113,16 @@ export function Wall() {
 
   const aspectOf = (vm) => shapes.get(vm.key)?.aspect || (16 / 9) * (isActive(vm) ? Math.min(vm.heads, 4) : 1);
   const grid = wallGrid(shown.map(aspectOf), size.width, size.height);
+  const customSize = !!resizing || shown.some((vm) => layout?.sizes?.[vm.key] || layout?.spans?.[vm.key] > 1);
+  const autoWidth = Math.max(1, (size.width - (grid.columns - 1) * 6) / grid.columns);
+  const autoHeight = Math.max(1, (size.height - (grid.rows - 1) * 6) / grid.rows);
+  const tileSize = (vm) => {
+    if (resizing?.key === vm.key) return resizing.dimensions;
+    if (layout?.sizes?.[vm.key]) return layout.sizes[vm.key];
+    const span = layout?.spans?.[vm.key] || 1;
+    const width = Math.min(autoWidth, autoHeight * aspectOf(vm)) * span;
+    return { width, height: width / aspectOf(vm) };
+  };
 
   const onShape = useCallback((key, width, height) => {
     if (!height) return;
@@ -127,6 +190,7 @@ export function Wall() {
       const data = await api("/api/groups/" + encodeURIComponent(name), { method: "PUT", body: { vms: [...selected] } });
       if (!currentGroup) setManual(new Set(selected));
       setGroups(data.groups);
+      if (layout && name !== group) setLayouts((old) => ({ ...old, [name]: layout }));
       setGroup(name);
       notify(`Group “${name}” saved with ${selected.size} VM${selected.size === 1 ? "" : "s"}.`);
     } catch (error) {
@@ -178,11 +242,12 @@ export function Wall() {
     <>
       <button
         id="toggle-sidebar"
-        aria-pressed={sidebar}
+        aria-expanded={sidebar}
+        aria-controls="vm-sidebar"
         title={(sidebar ? "Hide" : "Show") + " the VM list"}
         onClick={() => setSidebar(!sidebar)}
       >
-        ☰
+        {sidebar ? "Hide sidebar" : "Show sidebar"}
       </button>
       <span id="selection-count">{shown.length} selected</span>
       <button disabled={!selected.size} onClick={askSaveGroup} title="Save the selected VMs as a named group">
@@ -227,6 +292,13 @@ export function Wall() {
       <span id="live-count">
         Live {live.size}/{maxLive}
       </span>
+    </>
+  );
+
+  return (
+    <>
+      {bar && createPortal(controls, bar)}
+      {captureSlot && createPortal(
       <button
         id="capture-selected"
         className="primary"
@@ -235,13 +307,9 @@ export function Wall() {
         onClick={captureSelected}
       >
         Capture selected
-      </button>
-    </>
-  );
-
-  return (
-    <>
-      {bar && createPortal(controls, bar)}
+      </button>,
+        captureSlot,
+      )}
       <main className={"wall-layout" + (sidebar ? "" : " no-sidebar")}>
         <Sidebar
           query={query}
@@ -251,9 +319,21 @@ export function Wall() {
           group={group}
           toggleGroup={toggleGroup}
         />
-        <section className="wall" ref={wallRef} style={{ "--wall-columns": grid.columns, "--wall-rows": grid.rows }}>
-          {shown.map((vm) => (
+        <section className={"wall" + (customSize ? " custom-size" : "")} ref={wallRef}
+          style={{ "--wall-columns": grid.columns, "--wall-rows": grid.rows }}
+          onPointerMove={dragMove} onPointerUp={stopMove} onPointerCancel={stopMove} onLostPointerCapture={stopMove}>
+          {shown.map((vm, index) => (
             <Card
+              onMoveStart={startMove}
+              onMove={moveTile}
+              previous={shown[index - 1]?.key}
+              next={shown[index + 1]?.key}
+              dimensions={customSize ? tileSize(vm) : null}
+              onResize={(dimensions) => setResizing({ key: vm.key, dimensions })}
+              onResizeEnd={(dimensions) => {
+                if (dimensions) saveTileSize(vm.key, dimensions);
+                setResizing(null);
+              }}
               encoder={encoder}
               key={vm.key}
               vm={vm}
@@ -291,7 +371,7 @@ function Sidebar({ query, setQuery, selected, tick, group, toggleGroup }) {
   const matches = (vm) => vm.name.toLowerCase().includes(needle);
   const several = inventory.hosts.length > 1;
   return (
-    <div className="vm-sidebar">
+    <div id="vm-sidebar" className="vm-sidebar">
       <input
         type="search"
         placeholder="Find a VM…"
@@ -360,8 +440,45 @@ function Sidebar({ query, setQuery, selected, tick, group, toggleGroup }) {
 // One VM on the wall. Preview: a single image with every monitor side by side.
 // Live: VNC only carries the primary monitor, so the others stay on fast
 // per-monitor captures.
-const Card = memo(function Card({ vm, encoder, live, rate, aspect, monitors, audio, multiHost, hostName, onShape, onLive, onGiveUp, onAudio }) {
+const Card = memo(function Card({
+  vm, encoder, live, rate, aspect, monitors, audio, multiHost, hostName, onShape, onLive, onGiveUp, onAudio,
+  onMoveStart, onMove, previous, next, dimensions, onResize, onResizeEnd,
+}) {
   const [status, setStatus] = useState("preview");
+  const resize = useRef(null);
+
+  function resizedBox(box, edge, dx, dy, wallWidth) {
+    const width = edge.includes("e") ? box.width + dx : edge.includes("w") ? box.width - dx : box.width;
+    const height = edge.includes("s") ? box.height + dy : edge.includes("n") ? box.height - dy : box.height;
+    return {
+      width: Math.max(Math.min(120, wallWidth), Math.min(wallWidth, Math.round(width))),
+      height: Math.max(86, Math.round(height)),
+    };
+  }
+
+  function resizeStart(event, edge) {
+    if (!event.isPrimary || event.button !== 0) return;
+    const card = event.currentTarget.closest(".card");
+    resize.current = { x: event.clientX, y: event.clientY, edge,
+      box: card.getBoundingClientRect(), wallWidth: card.parentElement.clientWidth || Infinity };
+    event.currentTarget.setPointerCapture(event.pointerId);
+  }
+
+  function resizeMove(event) {
+    if (!resize.current || !event.currentTarget.hasPointerCapture(event.pointerId)) return;
+    const gesture = resize.current;
+    const dx = event.clientX - gesture.x, dy = event.clientY - gesture.y;
+    if (!gesture.dimensions && !dx && !dy) return;
+    gesture.dimensions = resizedBox(gesture.box, gesture.edge, dx, dy, gesture.wallWidth);
+    onResize(gesture.dimensions);
+  }
+
+  function resizeEnd(cancelled = false) {
+    if (!resize.current) return;
+    const { dimensions } = resize.current;
+    resize.current = null;
+    onResizeEnd(cancelled ? null : dimensions);
+  }
   useEffect(() => {
     if (!live) setStatus("preview");
   }, [live]);
@@ -369,12 +486,14 @@ const Card = memo(function Card({ vm, encoder, live, rate, aspect, monitors, aud
   const title = (multiHost ? hostName + " · " : "") + `${vm.name} · ${vm.state} · open monitor controls`;
   const control = "#/control/" + vm.key;
   return (
-    <article className="card" style={{ "--card-aspect": aspect }}>
+    <article className="card" data-tile-key={vm.key}
+      style={{ "--card-aspect": aspect, width: dimensions?.width, height: dimensions?.height }}>
       <header>
         <span className={"dot " + vm.state} title={vm.state} />
         <a className="vm-name" href={control} title={title}>
           {vm.name}
         </a>
+        {vm.kind === "physical" && <span className="card-status">Physical</span>}
         <Bandwidth scope={vm.key} />
         <span className="card-status">
           {multiHost && hostName + " · "}
@@ -382,7 +501,7 @@ const Card = memo(function Card({ vm, encoder, live, rate, aspect, monitors, aud
           <span className="live-status">{status}</span>
         </span>
         <a className="button" href={control}>
-          Take Control
+          {vm.input === false ? "View" : "Take Control"}
         </a>
         <button
           className={audio ? "chosen" : ""}
@@ -405,7 +524,17 @@ const Card = memo(function Card({ vm, encoder, live, rate, aspect, monitors, aud
           {live ? "Stop" : "Live"}
         </button>
       </header>
-      <div className={"card-screen" + (live ? " live" : "")}>
+      <div className={"card-screen" + (live ? " live" : "")} tabIndex={0} role="group"
+        aria-label={`Move ${vm.name} with the arrow keys`}
+        onPointerDown={(event) => onMoveStart(event, vm.key)}
+        onDragStart={(event) => event.preventDefault()}
+        onKeyDown={(event) => {
+          const target = ["ArrowLeft", "ArrowUp"].includes(event.key) ? previous :
+            ["ArrowRight", "ArrowDown"].includes(event.key) ? next : null;
+          if (!target) return;
+          event.preventDefault();
+          onMove(vm.key, target);
+        }}>
         {live ? (
           <>
             <div className="pane">
@@ -429,6 +558,25 @@ const Card = memo(function Card({ vm, encoder, live, rate, aspect, monitors, aud
           <div className="off-screen">{vm.state === "shut off" ? "Powered off" : vm.state}</div>
         )}
       </div>
+      {["n", "s", "w", "e", "nw", "ne", "sw", "se"].map((edge) => (
+        <button key={edge} className={`tile-resize resize-${edge}`} type="button"
+          tabIndex={edge === "se" ? 0 : -1}
+          aria-label={`Resize ${vm.name} from ${edge.toUpperCase()}`}
+          title={edge === "se" ? "Drag any edge or corner to resize" : undefined}
+          onPointerDown={(event) => resizeStart(event, edge)}
+          onPointerMove={resizeMove}
+          onPointerUp={() => resizeEnd()}
+          onLostPointerCapture={() => resizeEnd(true)}
+          onPointerCancel={() => resizeEnd(true)}
+          onKeyDown={(event) => {
+            const offsets = { ArrowLeft: [-24, 0], ArrowRight: [24, 0], ArrowUp: [0, -24], ArrowDown: [0, 24] };
+            const delta = offsets[event.key];
+            if (!delta) return;
+            event.preventDefault();
+            const card = event.currentTarget.closest(".card");
+            onResizeEnd(resizedBox(card.getBoundingClientRect(), edge, ...delta, card.parentElement.clientWidth || Infinity));
+          }}>{edge === "se" ? "◢" : null}</button>
+      ))}
     </article>
   );
 });

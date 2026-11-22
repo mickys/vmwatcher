@@ -117,6 +117,7 @@ function Shell({ session, reload }) {
   const [groups, setGroups] = useState([]);
   const [notice, setNotice] = useState(null);
   const [bar, setBar] = useState(null);
+  const [captureSlot, setCaptureSlot] = useState(null);
   const noticeTimer = useRef();
 
   const notify = useCallback((message, error = false) => {
@@ -168,7 +169,7 @@ function Shell({ session, reload }) {
 
   const running = inventory.vms.filter((vm) => vm.state === "running").length;
   const down = inventory.hosts.filter((host) => host.enabled && !host.ok);
-  const shell = { session, reload, inventory, refresh, groups, setGroups, notify, bar };
+  const shell = { session, reload, inventory, refresh, groups, setGroups, notify, bar, captureSlot };
   return (
     <ShellContext.Provider value={shell}><BandwidthProvider>
       <header className="top">
@@ -197,9 +198,12 @@ function Shell({ session, reload }) {
               (inventory.hosts.length > 1 ? ` · ${inventory.hosts.length} hosts` : "") +
               (down.length ? ` · ${down.length} unreachable` : "")}
         </span>
-        <button onClick={signOut} title="Sign out of this browser">
-          Sign out
-        </button>
+        <div className="header-actions">
+          <span ref={setCaptureSlot} />
+          <button onClick={signOut} title="Sign out of this browser">
+            Sign out
+          </button>
+        </div>
       </header>
       {notice && (
         <div id="notice" role="status" className={notice.error ? "error" : ""}>

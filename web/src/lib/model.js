@@ -54,7 +54,7 @@ export const isActive = (vm) => ["running", "paused"].includes(vm.state);
 export const canLive = (vm) => !!vm.live && isActive(vm);
 export function liveNote(vm, encoder = "vnc") {
   if (!isActive(vm)) return "The VM is not running";
-  if (encoder !== "vnc" && vm.heads > 0) return "";
+  if ((vm.kind === "physical" || encoder !== "vnc") && vm.heads > 0) return "";
   return vm.live ? "" : vm.liveNote || "Live view is unavailable for this VM";
 }
 const stateRank = (state) => (state === "running" ? 0 : state === "paused" ? 1 : 2);

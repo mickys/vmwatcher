@@ -309,6 +309,7 @@ struct HostOptions {
   std::vector<std::string> own; // extra addresses that belong to this machine
   int inventoryTtlMs = 10000;
 };
+std::shared_ptr<HostApi> makePhysicalHost(const Json& config);
 std::shared_ptr<HostApi> makeLibvirtHost(std::shared_ptr<Hypervisor> hypervisor, HostOptions options);
 std::shared_ptr<HostApi> makeAgentHost(const std::string& url, const std::string& token);
 std::string remoteHostOfUri(const std::string& uri);

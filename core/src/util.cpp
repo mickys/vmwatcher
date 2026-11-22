@@ -15,7 +15,7 @@
 
 namespace vmw {
 
-const char* const kVersion = "2.0.1";
+const char* const kVersion = "2.1.0";
 
 void fail(const std::string& message, int status) { throw HttpError(status, message); }
 

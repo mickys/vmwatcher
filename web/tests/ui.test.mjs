@@ -126,6 +126,13 @@ test("first run, wall, control and settings", async () => {
   await settle();
   assert.equal($$(".card").length, 3);
   assert.equal($("#selection-count").textContent, "3 selected");
+  await click(byText("button", "Hide sidebar"));
+  assert.ok($(".wall-layout.no-sidebar"));
+  assert.equal($("#toggle-sidebar").getAttribute("aria-expanded"), "false");
+  assert.equal(localStorage.getItem("vmw-sidebar"), "0");
+  assert.equal($$(".card").length, 3);
+  await click(byText("button", "Show sidebar"));
+  assert.equal($("#toggle-sidebar").getAttribute("aria-expanded"), "true");
   const alpha = $$(".card").find((card) => card.textContent.includes("alpha"));
   assert.match(alpha.querySelector("img").getAttribute("alt"), /alpha display previews/);
   assert.ok(server.calls.some((call) => call.path === `/api/hosts/local/vms/${id(1)}/preview.png`));
@@ -135,6 +142,36 @@ test("first run, wall, control and settings", async () => {
   const liveButton = [...gamma.querySelectorAll("button")].find((button) => button.textContent === "Live");
   assert.ok(liveButton.disabled && liveButton.title === "needs the agent");
   assert.equal(JSON.parse(localStorage.getItem("vmw-selected")).length, 3);
+  const orderedNames = () => $$(".card .vm-name").map((label) => label.textContent);
+  assert.deepEqual(orderedNames(), ["alpha", "gamma", "beta"]);
+  await act(async () => gamma.querySelector(".card-screen").dispatchEvent(
+    new KeyboardEvent("keydown", { key: "ArrowLeft", bubbles: true }),
+  ));
+  assert.deepEqual(orderedNames(), ["gamma", "alpha", "beta"]);
+  const wall = $(".wall");
+  const pointer = (element, type, x, y) => act(async () => element.dispatchEvent(new PointerEvent(type, {
+    bubbles: true, isPrimary: true, pointerId: 1, button: 0, clientX: x, clientY: y,
+  })));
+  wall.setPointerCapture = () => {};
+  const hitTest = document.elementFromPoint;
+  document.elementFromPoint = () => alpha;
+  await pointer(gamma.querySelector(".card-screen"), "pointerdown", 10, 10);
+  await pointer(wall, "pointermove", 80, 10);
+  assert.deepEqual(orderedNames(), ["alpha", "gamma", "beta"]);
+  await pointer(wall, "pointerup", 80, 10);
+  document.elementFromPoint = hitTest;
+  assert.equal(alpha.querySelectorAll(".tile-resize").length, 8);
+  const northWest = alpha.querySelector(".resize-nw");
+  northWest.setPointerCapture = () => {};
+  northWest.hasPointerCapture = () => true;
+  await pointer(northWest, "pointerdown", 100, 100);
+  await pointer(northWest, "pointermove", 60, 70);
+  assert.ok($(".wall.custom-size"));
+  assert.equal(alpha.style.width, "680px");
+  assert.equal(alpha.style.height, "390px");
+  assert.equal(JSON.parse(localStorage.getItem("vmw-layouts"))[""].sizes, undefined);
+  await pointer(northWest, "pointerup", 60, 70);
+  assert.deepEqual(JSON.parse(localStorage.getItem("vmw-layouts"))[""].sizes[`local/${id(1)}`], { width: 680, height: 390 });
 
   // A group replaces the selection, and toggling it off restores it.
   await click($(".group-option"));
@@ -142,10 +179,15 @@ test("first run, wall, control and settings", async () => {
   assert.match(byText(".bar button", "Update").textContent, /Night shift/);
   await click($(".group-option"));
   assert.equal($$(".card").length, 3);
+  assert.deepEqual(orderedNames(), ["alpha", "gamma", "beta"]);
+  assert.ok($(".wall.custom-size"));
+
+  assert.ok($(".header-actions #capture-selected"));
 
   // Take Control shows each monitor and arms the control button.
   await go("#/control/local/" + id(1));
   assert.equal($$(".monitor").length, 1);
+  assert.ok($(".header-actions #capture"));
   assert.equal($("#audit-vm").value, "local/" + id(1));
   assert.equal($$("#audit-vm optgroup").length, 2);
   assert.match(byText(".bar button", "Click a monitor").textContent, /Click a monitor to control/);

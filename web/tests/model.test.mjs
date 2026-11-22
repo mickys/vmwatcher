@@ -29,6 +29,9 @@ test("live view explains why it is unavailable", () => {
   assert.equal(liveNote({ state: "shut off", live: true }), "The VM is not running");
   assert.equal(liveNote({ state: "running", live: false, liveNote: "needs the agent" }), "needs the agent");
   assert.equal(liveNote({ state: "running", live: true }), "");
+  const physical = { kind: "physical", state: "running", heads: 1, live: false };
+  assert.equal(liveNote(physical, "vnc"), "");
+  assert.equal(canLive(physical), false);
   assert.equal(canLive({ state: "paused", live: true }), true);
   const sorted = [{ state: "shut off", name: "a" }, { state: "running", name: "z" }, { state: "running", name: "b" }].sort(byState);
   assert.deepEqual(sorted.map((vm) => vm.name), ["b", "z", "a"]);

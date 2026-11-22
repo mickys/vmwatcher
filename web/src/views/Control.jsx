@@ -34,8 +34,8 @@ export function Control({ vmKey }) {
 }
 
 function ControlVm({ vm }) {
-  const { session, inventory, notify, bar } = useShell();
-  const controlEnabled = session.settings.controlEnabled;
+  const { session, inventory, notify, bar, captureSlot } = useShell();
+  const controlEnabled = session.settings.controlEnabled && vm.input !== false;
   const [native, setNative] = useState(false);
   const [live, setLive] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -137,15 +137,18 @@ function ControlVm({ vm }) {
       >
         {audio ? "Mute audio" : "Audio"}
       </button>
-      <button id="capture" className="primary" disabled={busy || !isActive(vm)} onClick={capture}>
-        Save full audit
-      </button>
     </>
   );
 
   return (
     <>
       {bar && createPortal(controls, bar)}
+      {captureSlot && createPortal(
+      <button id="capture" className="primary" disabled={busy || !isActive(vm)} onClick={capture}>
+        Save full audit
+      </button>,
+        captureSlot,
+      )}
       <main className="audit-layout">
         <section
           ref={monitorsRef}
@@ -216,7 +219,7 @@ function ControlVm({ vm }) {
             <strong>{controlEnabled ? "Click a monitor to control" : "View only"}</strong>
             {controlEnabled && (
               <p>
-                Click either display to send mouse and keyboard input. Press Left Shift + Windows key or click outside
+                Click a display to send mouse and keyboard input. Press Left Shift + Windows key or click outside
                 the display to release control.
               </p>
             )}

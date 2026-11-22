@@ -6,7 +6,7 @@ const typeLabel = { local: "This machine", agent: "Agent", libvirt: "libvirt rem
 const typeHelp = {
   local: "The hypervisor running on the same machine as this service. Everything is supported.",
   agent:
-    "A VM Watcher agent installed on the hypervisor. Everything is supported: previews, live consoles, audio, control and audits.",
+    "Connect to a VM Watcher agent that serves virtual machines or physical computers. Physical sources use a capture plugin and can use a keyboard and mouse plugin.",
   libvirt:
     "A remote libvirt connection with nothing installed on the hypervisor. Previews, control and audits work. Live consoles and audio only work for VMs whose VNC console listens on a network address this service can reach.",
 };
@@ -45,8 +45,7 @@ export function Settings() {
           </button>
         </div>
         <p className="muted">
-          The hypervisors this viewer watches. Install the agent on a host for full support, or add a libvirt remote
-          when you cannot install anything there.
+          Connect to an agent for virtual machines or physical computers, or connect directly to a remote libvirt host.
         </p>
         <table className="hosts">
           <thead>
@@ -178,7 +177,7 @@ function HostForm({ host, view, done, cancel }) {
           Type
           <select value={form.type} onChange={set("type")} disabled={!!host}>
             {(host?.type === "local" || (view.libvirt.available && !localListed)) && <option value="local">This machine</option>}
-            <option value="agent">Agent (full support)</option>
+            <option value="agent">Agent</option>
             <option value="libvirt">libvirt remote (limited)</option>
             {host?.type === "demo" && <option value="demo">Demo</option>}
           </select>
@@ -217,11 +216,11 @@ function HostForm({ host, view, done, cancel }) {
         <details>
           <summary>How to install the agent</summary>
           <p className="muted">
-            Copy the <code>vmwatcher</code> binary to the hypervisor and run it there, bound to an address this service
-            can reach:
+            Run <code>vmwatcher</code> on the host using a private address the viewer can reach. For physical computers,
+            place <code>physical.json</code> in the agent data directory before starting it.
           </p>
           <pre>vmwatcher agent --bind HOST_ADDRESS --port 6089 --data /var/lib/vmwatcher-agent</pre>
-          <p className="muted">Then print its token and paste it above:</p>
+          <p className="muted">Enter the agent URL above, then run this on the agent host to get its token.</p>
           <pre>vmwatcher agent-token --data /var/lib/vmwatcher-agent</pre>
           <p className="muted">
             The agent only answers requests that carry this token. Traffic between this service and the agent is plain
@@ -314,7 +313,7 @@ function ViewerSettings({ view, saved }) {
           </label>
           <label>
             Stay signed in while idle (hours)
-            <input {...number("sessionHours", 1, 720)} />
+            <input {...number("sessionHours", 168, 720)} />
           </label>
           <label>
             Live video encoder

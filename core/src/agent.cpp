@@ -24,11 +24,16 @@ namespace {
 class Agent : public Service {
  public:
   explicit Agent(const Options& options) : token_(agentToken(options.data, true)) {
-    HostOptions hostOptions;
-    if (options.bind != "0.0.0.0" && options.bind != "::") hostOptions.own.push_back(options.bind);
-    std::shared_ptr<Hypervisor> hypervisor =
-        options.demo ? std::shared_ptr<Hypervisor>(openDemo("demo")) : std::shared_ptr<Hypervisor>(openLibvirt(options.uri));
-    host_ = makeLibvirtHost(hypervisor, hostOptions);
+    const std::string physical = options.data + "/physical.json";
+    if (fileExists(physical)) {
+      host_ = makePhysicalHost(Json::parse(readFile(physical, 65536)));
+    } else {
+      HostOptions hostOptions;
+      if (options.bind != "0.0.0.0" && options.bind != "::") hostOptions.own.push_back(options.bind);
+      std::shared_ptr<Hypervisor> hypervisor =
+          options.demo ? std::shared_ptr<Hypervisor>(openDemo("demo")) : std::shared_ptr<Hypervisor>(openLibvirt(options.uri));
+      host_ = makeLibvirtHost(hypervisor, hostOptions);
+    }
     char name[256] = "";
     gethostname(name, sizeof name - 1);
     hostname_ = name;
@@ -58,7 +63,7 @@ class Agent : public Service {
       return Response::bytes(host_->headPng(id, parts[6][0] - '0', req.param("fresh") == "1"), "image/png");
     if (parts.size() == 6 && parts[5] == "input" && req.method == "POST") {
       Json body = Json::parse(req.body);
-      if (!body["head"].isInt()) fail("Monitor unavailable");
+      if (!body["head"].isInt() || body["head"].integer() < 0 || body["head"].integer() > 3) fail("Monitor unavailable");
       host_->input(id, int(body["head"].integer()), body["events"]);
       return Response::json(obj({{"ok", true}}));
     }

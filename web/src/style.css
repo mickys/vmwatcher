@@ -117,10 +117,18 @@ select:focus-visible {
 #live-count {
   color: #53677a;
 }
-#capture-selected,
-#capture {
+.top > .bandwidth {
+  flex: 0 0 22ch;
+  text-align: right;
+}
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  white-space: nowrap;
   margin-left: auto;
 }
+.header-actions > span:empty { display: none; }
 #audit-vm {
   min-width: 200px;
   max-width: 340px;
@@ -136,7 +144,7 @@ select:focus-visible {
   flex: 1;
   min-height: 0;
   display: grid;
-  grid-template-columns: 260px minmax(0, 1fr);
+  grid-template-columns: clamp(190px, 23vw, 260px) minmax(0, 1fr);
   /* Without a bounded row the wall grows with its tiles and nothing fits. */
   grid-template-rows: minmax(0, 1fr);
   gap: 6px;
@@ -152,7 +160,7 @@ select:focus-visible {
   padding: 4px 8px;
   line-height: 1;
 }
-#toggle-sidebar[aria-pressed="true"] {
+#toggle-sidebar[aria-expanded="true"] {
   background: #ddeaf6;
   border-color: #87a8c8;
 }
@@ -584,6 +592,12 @@ dialog a {
 }
 
 /* ---- narrow screens: the page scrolls instead of fitting one screen ---- */
+@media (max-width: 1300px) {
+  .top:has(#toggle-sidebar) .bar {
+    order: 3;
+    flex: 1 0 100%;
+  }
+}
 @media (max-width: 1150px) {
   .audit-layout {
     grid-template-columns: 1fr;
@@ -613,6 +627,9 @@ dialog a {
   .wall-layout {
     grid-template-columns: 1fr;
     grid-template-rows: auto auto;
+  }
+  .wall-layout.no-sidebar {
+    grid-template-rows: minmax(0, 1fr);
   }
   .wall {
     overflow: hidden;
@@ -938,4 +955,68 @@ summary {
   white-space: nowrap;
   font-size: 0.75rem;
   font-variant-numeric: tabular-nums;
+}
+
+.wall.custom-size {
+  display: flex;
+  flex-wrap: wrap;
+  align-content: flex-start;
+  overflow: auto;
+}
+.wall.custom-size .card {
+  flex: none;
+  place-self: start;
+  max-width: 100%;
+  max-height: none;
+}
+.card .card-screen {
+  touch-action: none;
+  user-select: none;
+}
+.card .card-screen, .card .card-screen * {
+  cursor: grab !important;
+}
+.card .tile-resize {
+  position: absolute;
+  z-index: 3;
+  min-width: 0;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  touch-action: none;
+  user-select: none;
+}
+.card .resize-n, .card .resize-s {
+  left: 12px;
+  right: 12px;
+  height: 7px;
+  cursor: ns-resize;
+}
+.card .resize-w, .card .resize-e {
+  top: 12px;
+  bottom: 12px;
+  width: 7px;
+  cursor: ew-resize;
+}
+.card .resize-n, .card .resize-nw, .card .resize-ne { top: 0; }
+.card .resize-s, .card .resize-sw, .card .resize-se { bottom: 0; }
+.card .resize-w, .card .resize-nw, .card .resize-sw { left: 0; }
+.card .resize-e, .card .resize-ne, .card .resize-se { right: 0; }
+.card .resize-nw, .card .resize-ne, .card .resize-sw, .card .resize-se {
+  width: 12px;
+  height: 12px;
+}
+.card .resize-nw, .card .resize-se { cursor: nwse-resize; }
+.card .resize-ne, .card .resize-sw { cursor: nesw-resize; }
+.card .resize-se {
+  color: #fff;
+  line-height: 12px;
+  text-shadow: 0 0 2px #000, 0 0 3px #000;
+  opacity: 0;
+}
+.card:hover .resize-se, .card:focus-within .resize-se { opacity: 1; }
+@media (hover: none) {
+  .card .resize-se { opacity: 1; }
 }

@@ -57,6 +57,74 @@ sandboxed systemd unit and restarts it. The central service uses its own systemd
 old wall's groups across, copy its `data/groups.json` into the new `data/`
 directory (old entries are attributed to the host called `local`).
 
+### Physical computers on the wall
+
+A capture card and a keyboard/mouse emulator can drive a wall tile without
+libvirt. On the Linux host with the capture device, put `physical.json` in its agent
+data directory (`<install-root>/agent-data` for the systemd install) **before**
+starting the agent. Use a stable ID from `uuidgen` for each computer.
+
+```json
+{
+  "sources": [
+    {
+      "id": "a94d4344-3634-46cf-a90f-f7fa7fec48cf",
+      "name": "Physical computer",
+      "capture": "/opt/vmwatcher/plugins/capture",
+      "hid": "/opt/vmwatcher/plugins/hid"
+    }
+  ]
+}
+```
+
+The file selects physical-source mode for that agent. Each entry supplies one
+display. Use a separate agent instance if the same host should also list
+libvirt guests. Restart the agent after changing the file.
+
+Install or update the agent with
+`scripts/deploy.sh agent <capture-host> <private-address>`, then add the agent
+URL and token under **Settings → Hosts** in an updated VM Watcher viewer.
+Physical computers support previews, encoded live video, and audits. When the
+viewer uses VNC for VMs, physical tiles use software H.264. Audio is unavailable
+for physical sources. Omit `hid` for a view-only tile. With a HID plugin, input
+also requires **Settings → Keyboard and mouse control**.
+
+#### Device plugin contract
+
+Both paths point to administrator-installed executables. The agent launches
+them directly with no arguments under its service account. Keep the
+executables and configuration writable only by the administrator. Give the
+service account access to the capture card and HID emulator. Put plugins
+outside home directories when using the supplied systemd unit.
+
+- **Capture** writes a single RGB PNG or binary P6 PPM to stdout and exits
+  successfully. Stdin is empty. For a Linux V4L2 capture card, a starting
+  point for the executable is below. Set the device path and capture format
+  for your hardware.
+- **HID** reads one JSON object from stdin through EOF, applies events in the
+  order supplied, and exits successfully with empty stdout. `head` is always
+  `0`. An `abs` event gives an `x` or `y` coordinate from 0 to 32767 across
+  the display. A `btn` event gives a `button` and boolean `down`; buttons are
+  `left`, `middle`, `right`, `wheel-up`, and `wheel-down`. A `key` event
+  gives a QEMU qcode and boolean `down`. The plugin maps these to the emulator
+  protocol and preserves held keys, buttons and pointer position across
+  invocations.
+- Report diagnostics on stderr and return a nonzero status on failure.
+  Each call has a three-second deadline. For hardware that needs a persistent
+  capture or input connection, use an executable that talks to a local device
+  process over IPC. Keep the agent on a private network reachable by the
+  viewer.
+
+```sh
+#!/bin/sh
+exec /usr/bin/ffmpeg -nostdin -hide_banner -loglevel error \
+  -f v4l2 -i /dev/video0 -frames:v 1 -pix_fmt rgb24 -threads 1 -c:v png -f image2pipe pipe:1
+```
+
+```json
+{"head":0,"events":[{"type":"abs","data":{"axis":"x","value":16384}},{"type":"key","data":{"key":{"type":"qcode","data":"a"},"down":true}}]}
+```
+
 ### HTTPS
 
 The central service serves HTTPS only (`--tls-cert`, `--tls-key`; TLS 1.2+).

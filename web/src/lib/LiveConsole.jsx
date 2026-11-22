@@ -6,8 +6,9 @@ import { vmUrl, wsUrl } from "./api.js";
 // View-only noVNC console of a VM's primary monitor. Reconnects with backoff;
 // a console that never connects gives up after three attempts via onGiveUp.
 export function LiveConsole(props) {
-  const encoder = useShell().session.settings.videoEncoder;
-  if (!encoder || encoder === "vnc") return <VncConsole {...props} />;
+  const preferred = useShell().session.settings.videoEncoder || "vnc";
+  const encoder = props.vm.kind === "physical" && preferred === "vnc" ? "software-h264" : preferred;
+  if (encoder === "vnc") return <VncConsole {...props} />;
   return <EncodedConsole key={encoder} encoder={encoder} {...props} />;
 }
 

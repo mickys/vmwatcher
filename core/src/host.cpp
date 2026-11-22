@@ -407,7 +407,7 @@ class AgentHost : public HostApi {
         message = Json::parse(res.body)["error"].str(message);
       } catch (const std::exception&) {
       }
-      fail(message, res.status == 404 ? 404 : 400);
+      fail(message, res.status >= 500 || res.status == 403 || res.status == 404 ? res.status : 400);
     }
     return res;
   }
