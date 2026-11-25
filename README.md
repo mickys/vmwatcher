@@ -92,6 +92,9 @@ Either way, input also requires **Settings → Keyboard and mouse control**.
 
 #### ESP32-S2 keyboard/mouse dongle
 
+The current setup, measurements and procedures for the physical test PC are in
+[docs/physical-pc.md](docs/physical-pc.md).
+
 The agent drives the ESP32-S2 "Mordin KVM" dongle natively. The dongle is a USB
 keyboard and relative mouse on the controlled computer and takes commands over
 TCP 8889 after an HMAC-SHA256 challenge:
