@@ -309,6 +309,13 @@ struct HostOptions {
   std::vector<std::string> own; // extra addresses that belong to this machine
   int inventoryTtlMs = 10000;
 };
+// A keyboard/mouse device driven directly by the agent (physical.json "hid" object).
+struct HidDevice {
+  virtual ~HidDevice() = default;
+  virtual void apply(const Json& events) = 0;  // validated inputEvents() output
+};
+std::shared_ptr<HidDevice> makeHidDevice(const Json& config);
+int hidUsageOfQcode(const std::string& qcode);  // 0 when unmapped
 std::shared_ptr<HostApi> makePhysicalHost(const Json& config);
 std::shared_ptr<HostApi> makeLibvirtHost(std::shared_ptr<Hypervisor> hypervisor, HostOptions options);
 std::shared_ptr<HostApi> makeAgentHost(const std::string& url, const std::string& token);

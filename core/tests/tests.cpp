@@ -1,3 +1,8 @@
+#include <cmath>
+#include <mutex>
+#include <atomic>
+#include <netinet/in.h>
+#include <arpa/inet.h>
 // Unit and integration tests. No test framework: each check reports its line.
 #include <sys/socket.h>
 #include <sys/stat.h>
@@ -562,6 +567,138 @@ static void testPhysicalAgent() {
   removeTree(root);
 }
 
+// A fake ESP32-S2 dongle on loopback: checks the HMAC handshake and records commands.
+struct FakeDongle {
+  int listenFd = -1, port = 0;
+  std::string key;
+  std::mutex mutex;
+  std::vector<std::string> lines;
+  int sessions = 0, rejected = 0;
+  std::thread thread;
+  std::atomic<bool> stop{false};
+  explicit FakeDongle(std::string k) : key(std::move(k)) {
+    listenFd = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    sockaddr_in a{};
+    a.sin_family = AF_INET;
+    a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    bind(listenFd, reinterpret_cast<sockaddr*>(&a), sizeof a);
+    listen(listenFd, 4);
+    socklen_t n = sizeof a;
+    getsockname(listenFd, reinterpret_cast<sockaddr*>(&a), &n);
+    port = ntohs(a.sin_port);
+    thread = std::thread([this] {
+      while (!stop) {
+        int fd = accept(listenFd, nullptr, nullptr);
+        if (fd < 0) return;
+        Conn c(fd);
+        c.timeouts(5, 5);
+        try {
+          std::string challenge = randomHex(16), line;
+          c.write("CHALLENGE " + challenge + "\r\n");
+          if (!c.readUntil("\n", 400, line)) continue;
+          if (line != "auth " + hex(hmacSha256(key, challenge))) {
+            std::lock_guard<std::mutex> lock(mutex);
+            rejected++;
+            c.write("ERR\r\n");
+            continue;
+          }
+          c.write("OK\r\n");
+          {
+            std::lock_guard<std::mutex> lock(mutex);
+            sessions++;
+          }
+          while (c.readUntil("\n", 400, line)) {
+            {
+              std::lock_guard<std::mutex> lock(mutex);
+              lines.push_back(line);
+            }
+            c.write(line == "down 999" ? "ERR\r\n" : "OK\r\n");
+          }
+        } catch (const std::exception&) {
+        }
+      }
+    });
+  }
+  ~FakeDongle() {
+    stop = true;
+    shutdown(listenFd, SHUT_RDWR);
+    close(listenFd);
+    thread.join();
+  }
+  std::vector<std::string> take() {
+    std::lock_guard<std::mutex> lock(mutex);
+    auto out = lines;
+    lines.clear();
+    return out;
+  }
+};
+
+static void testS2Kvm() {
+  CHECK(hidUsageOfQcode("a") == 4 && hidUsageOfQcode("z") == 29 && hidUsageOfQcode("1") == 30 && hidUsageOfQcode("0") == 39);
+  CHECK(hidUsageOfQcode("ret") == 40 && hidUsageOfQcode("f1") == 58 && hidUsageOfQcode("f12") == 69 && hidUsageOfQcode("kp_1") == 89);
+  CHECK(hidUsageOfQcode("kp_0") == 98 && hidUsageOfQcode("meta_l") == 227 && hidUsageOfQcode("shift_r") == 229);
+  CHECK(hidUsageOfQcode("nonsense") == 0 && hidUsageOfQcode("f99") == 0);
+
+  char cwd[4096];
+  CHECK(getcwd(cwd, sizeof cwd) != nullptr);
+  std::string root = std::string(cwd) + "/build/kvm-test-" + randomHex(4);
+  makeDirs(root);
+  std::string key = randomHex(32);
+  writeFileAtomic(root + "/kvm.key", key + "\n");
+  FakeDongle dongle(key);
+  Json config = obj({{"type", "esp32-s2-kvm"}, {"address", "127.0.0.1"}, {"port", dongle.port}, {"keyFile", root + "/kvm.key"},
+                     {"screen", Json::Array{Json(1000), Json(500)}}});
+  THROWS(makeHidDevice(obj({{"type", "nope"}})));
+  THROWS(makeHidDevice(obj({{"type", "esp32-s2-kvm"}, {"address", "127.0.0.1"}, {"keyFile", "relative"}})));
+  auto device = makeHidDevice(config);
+
+  // Keys go out as HID usages on one authenticated session.
+  device->apply(inputEvents(Json::parse(R"([{"type":"key","data":{"down":true,"key":{"type":"qcode","data":"shift"}}},
+    {"type":"key","data":{"down":true,"key":{"type":"qcode","data":"a"}}},{"type":"key","data":{"down":false,"key":{"type":"qcode","data":"a"}}}])")));
+  CHECK((dongle.take() == std::vector<std::string>{"down 225", "down 4", "up 4"}));
+  // The first pointer move homes to the corner, then moves in steps of at most 127.
+  device->apply(inputEvents(Json::parse(R"([{"type":"abs","data":{"axis":"x","value":32767}},{"type":"abs","data":{"axis":"y","value":16384}}])")));
+  auto moves = dongle.take();
+  int homes = 0, sx = 0, sy = 0;
+  for (const auto& line : moves) {
+    if (line == "mouse -127 -127 0 0 0") { homes++; continue; }
+    int dx, dy, w, p, b;
+    CHECK(sscanf(line.c_str(), "mouse %d %d %d %d %d", &dx, &dy, &w, &p, &b) == 5 && std::abs(dx) <= 127 && std::abs(dy) <= 127);
+    sx += dx;
+    sy += dy;
+  }
+  CHECK(homes == 12 && sx == 999 && sy == 250);  // ceil(1000/127) + 4 homing steps
+  // A click re-homes first (pointer acceleration drifts), then presses and releases.
+  device->apply(inputEvents(Json::parse(R"([{"type":"btn","data":{"button":"left","down":true}},{"type":"btn","data":{"button":"left","down":false}},
+    {"type":"btn","data":{"button":"wheel-down","down":true}},{"type":"btn","data":{"button":"wheel-down","down":false}}])")));
+  auto click = dongle.take();
+  CHECK(click.size() >= 4 && click[0] == "mouse -127 -127 0 0 0");
+  CHECK(click[click.size() - 3] == "mouse 0 0 0 0 1" && click[click.size() - 2] == "mouse 0 0 0 0 0" && click.back() == "mouse 0 0 -1 0 0");
+  // Unmapped keys are skipped; a refused command reports an error.
+  device->apply(inputEvents(Json::parse(R"([{"type":"key","data":{"down":true,"key":{"type":"qcode","data":"unmapped"}}}])")));
+  CHECK(dongle.take().empty());
+  {
+    std::lock_guard<std::mutex> lock(dongle.mutex);
+    CHECK(dongle.sessions == 1 && dongle.rejected == 0);
+  }
+  // Holding a key keeps it alive past the dongle's 3 s release.
+  device->apply(inputEvents(Json::parse(R"([{"type":"key","data":{"down":true,"key":{"type":"qcode","data":"ctrl"}}}])")));
+  usleep(2300000);
+  auto held = dongle.take();
+  CHECK(held.size() >= 2 && held[0] == "down 224" && held[1] == "mouse 0 0 0 0 0");
+  // A wrong key is rejected by the dongle and reported, not retried forever.
+  device.reset();
+  writeFileAtomic(root + "/kvm.key", std::string(64, 'a') + "\n");
+  auto wrong = makeHidDevice(config);
+  THROWS(wrong->apply(inputEvents(Json::parse(R"([{"type":"key","data":{"down":true,"key":{"type":"qcode","data":"a"}}}])"))));
+  {
+    std::lock_guard<std::mutex> lock(dongle.mutex);
+    CHECK(dongle.rejected == 1);
+  }
+  wrong.reset();
+  removeTree(root);
+}
+
 int main() {
   testCrypto();
   testJson();
@@ -573,6 +710,7 @@ int main() {
   testBridge();
   testServices();
   testPhysicalAgent();
+  testS2Kvm();
   printf("%d checks, %d failed\n", checks, failures);
   return failures ? 1 : 0;
 }

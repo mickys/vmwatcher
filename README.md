@@ -86,8 +86,50 @@ Install or update the agent with
 URL and token under **Settings → Hosts** in an updated VM Watcher viewer.
 Physical computers support previews, encoded live video, and audits. When the
 viewer uses VNC for VMs, physical tiles use software H.264. Audio is unavailable
-for physical sources. Omit `hid` for a view-only tile. With a HID plugin, input
-also requires **Settings → Keyboard and mouse control**.
+for physical sources. Omit `hid` for a view-only tile. `hid` is either the path
+of a HID plugin (below) or an object naming a device the agent drives itself.
+Either way, input also requires **Settings → Keyboard and mouse control**.
+
+#### ESP32-S2 keyboard/mouse dongle
+
+The agent drives the ESP32-S2 "Mordin KVM" dongle natively. The dongle is a USB
+keyboard and relative mouse on the controlled computer and takes commands over
+TCP 8889 after an HMAC-SHA256 challenge:
+
+```json
+"hid": {
+  "type": "esp32-s2-kvm",
+  "address": "192.168.1.98",
+  "port": 8889,
+  "keyFile": "/opt/vmwatcher/agent-data/s2-kvm.key",
+  "screen": [1920, 1080],
+  "mickeysPerPixel": 1.0,
+  "rehomeOnClick": true
+}
+```
+
+- `keyFile` holds the dongle's 64-character lowercase hex key, mode 0600.
+  Keep it inside the agent's data directory: the systemd unit hides `/root`
+  and `/home` from the agent.
+- `address` is the dongle's DHCP address; give it a reservation so it stays put.
+- The agent keeps one authenticated session open. The dongle serves one client
+  at a time, so other tools (`kvmctl.py`) wait until the agent closes its idle
+  session, at most 45 s after the last input.
+- The dongle releases every held input on disconnect and after three seconds
+  without a report. The agent refreshes held keys and buttons once a second,
+  and releases them itself when the viewer has sent nothing for 30 s.
+- The mouse is relative only. The agent pins the pointer to the top-left corner
+  with large negative moves, then moves by the difference between positions in
+  `screen` pixels times `mickeysPerPixel`. Set `screen` to the controlled
+  computer's resolution; the capture card cannot report it. Pointer
+  acceleration (Windows "Enhance pointer precision", desktop mouse
+  acceleration) makes positions drift; turn it off on the controlled computer
+  or tune `mickeysPerPixel`. With `rehomeOnClick` each new press starts from
+  the corner again, so clicks land where shown at the cost of a visible jump.
+- QEMU key names from the viewer are mapped to USB HID keyboard usages; keys
+  without a mapping are ignored.
+- The session is authenticated but not encrypted. Keep the dongle and the agent
+  on the management network.
 
 #### Device plugin contract
 

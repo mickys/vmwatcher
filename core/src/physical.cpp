@@ -102,14 +102,16 @@ class PhysicalHost : public HostApi {
       auto source = std::make_unique<Source>();
       source->name = name;
       source->capture = pluginPath(entry, "capture", true);
-      source->hid = pluginPath(entry, "hid", false);
+      // "hid" is either a plugin executable or a natively driven device.
+      if (entry["hid"].isObject()) source->device = makeHidDevice(entry["hid"]);
+      else source->hid = pluginPath(entry, "hid", false);
       sources_.emplace(id, std::move(source));
     }
   }
 
   Json info() override {
     bool input = false;
-    for (const auto& entry : sources_) input |= !entry.second->hid.empty();
+    for (const auto& entry : sources_) input |= entry.second->controllable();
     return obj({{"version", kVersion}, {"mode", "physical"},
                 {"capabilities", obj({{"live", true}, {"audio", false}, {"input", input}})}});
   }
@@ -130,7 +132,7 @@ class PhysicalHost : public HostApi {
       Json displays = Json::Array{};
       displays.push(display);
       out.push(obj({{"id", entry.first}, {"name", source.name}, {"kind", "physical"}, {"state", "running"},
-                    {"heads", 1}, {"vnc", false}, {"live", false}, {"input", !source.hid.empty()}, {"displays", displays}}));
+                    {"heads", 1}, {"vnc", false}, {"live", false}, {"input", source.controllable()}, {"displays", displays}}));
     }
     return out;
   }
@@ -150,8 +152,9 @@ class PhysicalHost : public HostApi {
   void input(const std::string& id, int head, const Json& raw) override {
     auto& source = get(id);
     if (head != 0) fail("Head is not configured", 404);
-    if (source.hid.empty()) fail("No HID plugin is configured", 403);
+    if (!source.controllable()) fail("No HID plugin is configured", 403);
     Json events = inputEvents(raw);
+    if (source.device) return source.device->apply(events);
     std::unique_lock<std::timed_mutex> lock(source.hidMutex, std::defer_lock);
     if (!lock.try_lock_for(std::chrono::seconds(1))) fail("HID plugin busy", 503);
     runPlugin(source.hid, obj({{"head", head}, {"events", events}}).dump() + "\n", 4096);
@@ -171,6 +174,8 @@ class PhysicalHost : public HostApi {
 
   struct Source {
     std::string name, capture, hid;
+    std::shared_ptr<HidDevice> device;
+    bool controllable() const { return device || !hid.empty(); }
     std::timed_mutex captureMutex, hidMutex;
     std::mutex frameMutex;
     std::shared_ptr<Frame> frame;
