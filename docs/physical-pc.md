@@ -8,14 +8,15 @@ the wall). Facts below were checked on 2026-11-26 unless marked otherwise.
 | Part | Where | Details |
 | --- | --- | --- |
 | Test computer | on the bench | ASUS PRIME Z270-P, AMI BIOS 0810, Pentium G4400, 32 GB, M.2 Micron 256 GB + SanDisk 256 GB, both with Windows Boot Manager |
-| Video | test PC HDMI → Elgato Game Capture HD60 X on **mordin** USB 3 | `/dev/v4l/by-id/usb-Elgato_Game_Capture_HD60_X_MX20L1A13493-video-index0` (`/dev/video0`) |
+| Video, display 1 | test PC HDMI → Elgato Game Capture HD60 X on **mordin** USB 3 | `/dev/v4l/by-id/usb-Elgato_Game_Capture_HD60_X_MX20L1A13493-video-index0` (`/dev/video0`); shows an "elgato / No Signal" card without input |
+| Video, display 2 | test PC second output → MACROSILICON USB3.0 Video stick on **mordin** | `/dev/v4l/by-id/usb-MACROSILICON_USB3.0_Video_35720661-video-index0` (`/dev/video2`); MJPEG or YUYV up to 1920×1080; plain black without a picture |
 | Keyboard and mouse | ESP32-S2 Mini (LOLIN S2 Mini) USB-C → test PC | USB HID "HomeLab Mordin KVM Keyboard & Mouse"; Wi-Fi `Nowlive Mesh 2.4g`, hostname `mordin-kvm`, last DHCP address **192.168.1.98**, TCP **8889** |
 | Agent | **mordin** (192.168.88.4, Debian, libvirt host) | `vmwatcher-agent.service` on `http://192.168.88.4:6089`, data in `/opt/vmwatcher/agent-data` |
 | Viewer | **EDI** | `https://192.168.88.3:6443`, host `mordin` in Settings → Hosts |
 
-Also on mordin, not used by this setup: a MACROSILICON USB 3 capture stick
-(`/dev/video2`) and a CP2102 serial bridge that was reconnecting every second
-on 2026-11-26 00:58.
+Also on mordin, not used by this setup: a CP2102 serial bridge that was
+reconnecting every second on 2026-11-26 00:58. The kernel also logs
+`uvcvideo: Non-zero status (-71)` bursts from a capture device.
 
 The older Legion route (`/opt/vmwatcher/plugins/legion-hid`,
 `legion_control.py`, ESP32 receiver at 192.168.1.152:8889, keyboard taps only,
@@ -46,7 +47,10 @@ In UEFI setup a click or key can change firmware settings.
     {
       "id": "5c7c260e-ff75-4dd6-b941-a53463e1fede",
       "name": "Physical PC",
-      "capture": "/opt/vmwatcher/plugins/elgato-hd60x-capture",
+      "capture": [
+        "/opt/vmwatcher/plugins/elgato-hd60x-capture",
+        "/opt/vmwatcher/plugins/macrosilicon-capture"
+      ],
       "hid": {
         "type": "esp32-s2-kvm",
         "address": "192.168.1.98",
@@ -54,7 +58,8 @@ In UEFI setup a click or key can change firmware settings.
         "keyFile": "/opt/vmwatcher/agent-data/s2-kvm.key",
         "screen": [1024, 768],
         "rehomeOnClick": false,
-        "pointer": { "model": "divided", "divisor": 8, "step": 12, "small": 3 }
+        "pointer": { "model": "divided", "divisor": 8, "step": 12, "small": 3 },
+        "displays": [[0, 0, 1024, 768], [1024, 0, 1024, 768]]
       }
     }
   ]
@@ -64,8 +69,10 @@ In UEFI setup a click or key can change firmware settings.
 The pointer settings above fit the **UEFI setup**. See
 [Pointer behaviour](#pointer-behaviour) before using it in Windows.
 
-The capture plugin grabs one 1280×720 NV12 frame with ffmpeg and returns a
-PNG (about 0.2 s per frame). The card can deliver up to 3840×2160 NV12 or
+Each capture plugin grabs one 1280×720 frame with ffmpeg and returns a PNG:
+NV12 from the Elgato (about 0.2 s), MJPEG from the MACROSILICON stick (about
+0.35–0.85 s). Live video streams display 1; display 2 refreshes once a second
+in Take Control and the wall preview shows both side by side. The card can deliver up to 3840×2160 NV12 or
 1920×1080 YUYV, but it cannot report the test PC's own output resolution
 (`v4l2-ctl` is not installed on mordin).
 
@@ -136,6 +143,16 @@ Native driver `core/src/kvm.cpp`, selected by an object-valued `hid` in
   edges clamp it), tracks its position in `screen` coordinates, and sends the
   reports that reach each new target. Moves are pipelined 16 lines at a time.
 
+### Two displays
+
+`hid.displays` places the displays in the pointer space, in `capture` order.
+The current layout assumes display 2 sits to the right of display 1, same
+size, tops aligned. It has not been checked against Windows' display
+arrangement; fix it once the PC runs an OS with both outputs active. Input on
+a different display than the last re-homes first. In UEFI setup only one
+output is active, so pointer input on display 2 there just pins the pointer
+to the right edge of display 1 until the next re-home.
+
 ## Pointer behaviour
 
 The dongle is a **relative** mouse, so where the pointer ends up depends on
@@ -205,6 +222,11 @@ check go to `POST /agent/v1/vms/<id>/input` with
 `{"head":0,"events":[{"type":"abs","data":{"axis":"x","value":16384}}, …]}`.
 
 ## Last known state (2026-11-26)
+
+- 01:51: after the second display was configured, **neither card had a
+  picture** (Elgato "No Signal", MACROSILICON black) while the dongle still
+  answered on 8889. The PC's outputs were off or switching; nothing was sent
+  to wake it.
 
 - The test PC was in **UEFI setup, EZ Mode**, after a "Press F1 to Run SETUP"
   prompt about RAID/Optane settings. The BIOS listed "1 Keyboard, 1 Mouse"

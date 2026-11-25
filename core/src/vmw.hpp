@@ -312,7 +312,8 @@ struct HostOptions {
 // A keyboard/mouse device driven directly by the agent (physical.json "hid" object).
 struct HidDevice {
   virtual ~HidDevice() = default;
-  virtual void apply(const Json& events) = 0;  // validated inputEvents() output
+  // `events` is validated inputEvents() output for display `head`.
+  virtual void apply(int head, const Json& events) = 0;
 };
 std::shared_ptr<HidDevice> makeHidDevice(const Json& config);
 int hidUsageOfQcode(const std::string& qcode);  // 0 when unmapped

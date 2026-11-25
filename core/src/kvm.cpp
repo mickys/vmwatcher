@@ -66,6 +66,24 @@ class S2Kvm : public HidDevice {
       height_ = int(screen.arr()[1].integer(0));
     }
     if (width_ < 64 || height_ < 64 || width_ > 16384 || height_ > 16384) throw std::runtime_error("hid.screen must be [width, height]");
+    // Where each display sits in the pointer space, as [x, y, width, height].
+    // Without it there is one display covering `screen`.
+    const Json& displays = config["displays"];
+    if (displays.isArray()) {
+      if (displays.arr().empty() || displays.arr().size() > 4) throw std::runtime_error("hid.displays needs 1 to 4 entries");
+      width_ = height_ = 0;
+      for (const Json& d : displays.arr()) {
+        const auto& v = d.arr();
+        if (v.size() != 4) throw std::runtime_error("hid.displays entries are [x, y, width, height]");
+        Rect r{int(v[0].integer(-1)), int(v[1].integer(-1)), int(v[2].integer(0)), int(v[3].integer(0))};
+        if (r.x < 0 || r.y < 0 || r.w < 64 || r.h < 64 || r.x + r.w > 16384 || r.y + r.h > 16384)
+          throw std::runtime_error("hid.displays entry is out of range");
+        displays_.push_back(r);
+        width_ = std::max(width_, r.x + r.w);
+        height_ = std::max(height_, r.y + r.h);
+      }
+    } else
+      displays_.push_back(Rect{0, 0, width_, height_});
     gain_ = config["mickeysPerPixel"].num(1.0);
     if (!(gain_ > 0.05 && gain_ < 20)) throw std::runtime_error("hid.mickeysPerPixel is out of range");
     // "linear": the target moves counts x gain (an OS with pointer acceleration off).
@@ -94,9 +112,16 @@ class S2Kvm : public HidDevice {
     worker_.join();
   }
 
-  void apply(const Json& events) override {
+  void apply(int head, const Json& events) override {
+    if (head < 0 || size_t(head) >= displays_.size())
+      fail("No pointer layout for display " + std::to_string(head + 1) + " (hid.displays)", 400);
+    const Rect& display = displays_[size_t(head)];
     std::unique_lock<std::timed_mutex> lock(mutex_, std::defer_lock);
     if (!lock.try_lock_for(std::chrono::seconds(2))) fail("Keyboard/mouse dongle busy", 503);
+    // Crossing to another display re-homes: a display the target does not
+    // show (UEFI setup drives one output) would otherwise corrupt tracking.
+    if (head != lastHead_) homed_ = false;
+    lastHead_ = head;
     lastInput_ = Clock::now();
     std::vector<std::string> lines;
     // Pointer moves are collected and sent as one move before the next button
@@ -115,8 +140,8 @@ class S2Kvm : public HidDevice {
       if (type == "abs") {
         int v = int(data["value"].integer());
         bool horizontal = data["axis"].str() == "x";
-        int span = (horizontal ? width_ : height_) - 1;
-        int pixel = int(std::lround(double(v) / 32767.0 * span));
+        int span = (horizontal ? display.w : display.h) - 1;
+        int pixel = (horizontal ? display.x : display.y) + int(std::lround(double(v) / 32767.0 * span));
         (horizontal ? targetX : targetY) = pixel;
       } else if (type == "btn") {
         const std::string& name = data["button"].str();
@@ -301,7 +326,11 @@ class S2Kvm : public HidDevice {
   }
 
   std::string address_, keyFile_;
-  int port_ = 8889, width_ = 1920, height_ = 1080;
+  int port_ = 8889, width_ = 1920, height_ = 1080, lastHead_ = 0;
+  struct Rect {
+    int x, y, w, h;
+  };
+  std::vector<Rect> displays_;
   double gain_ = 1.0, residualX_ = 0, residualY_ = 0;
   std::string model_ = "linear";
   int divisor_ = 8, step_ = 12, small_ = 3;

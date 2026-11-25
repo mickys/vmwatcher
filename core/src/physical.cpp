@@ -101,7 +101,13 @@ class PhysicalHost : public HostApi {
       if (!isUuid(id) || name.empty() || sources_.count(id)) throw std::runtime_error("Invalid or duplicate physical source ID or name");
       auto source = std::make_unique<Source>();
       source->name = name;
-      source->capture = pluginPath(entry, "capture", true);
+      // One capture plugin per display: a path, or an array of paths.
+      if (entry["capture"].isArray()) {
+        if (entry["capture"].arr().empty() || entry["capture"].arr().size() > 4)
+          throw std::runtime_error("capture needs 1 to 4 plugins");
+        for (const Json& path : entry["capture"].arr()) source->addHead(pluginPath(obj({{"capture", path}}), "capture", true));
+      } else
+        source->addHead(pluginPath(entry, "capture", true));
       // "hid" is either a plugin executable or a natively driven device.
       if (entry["hid"].isObject()) source->device = makeHidDevice(entry["hid"]);
       else source->hid = pluginPath(entry, "hid", false);
@@ -120,41 +126,59 @@ class PhysicalHost : public HostApi {
     Json out = Json::Array{};
     for (const auto& entry : sources_) {
       auto& source = *entry.second;
-      Json display = obj({{"head", 0}});
-      {
-        std::lock_guard<std::mutex> lock(source.frameMutex);
-        if (source.frame) {
-          display.set("width", source.frame->image.width);
-          display.set("height", source.frame->image.height);
-          display.set("capturedAt", isoTime(source.frame->time));
-        }
-      }
       Json displays = Json::Array{};
-      displays.push(display);
+      for (size_t head = 0; head < source.heads.size(); head++) {
+        auto& h = *source.heads[head];
+        Json display = obj({{"head", int(head)}});
+        std::lock_guard<std::mutex> lock(h.frameMutex);
+        if (h.frame) {
+          display.set("width", h.frame->image.width);
+          display.set("height", h.frame->image.height);
+          display.set("capturedAt", isoTime(h.frame->time));
+        }
+        displays.push(display);
+      }
       out.push(obj({{"id", entry.first}, {"name", source.name}, {"kind", "physical"}, {"state", "running"},
-                    {"heads", 1}, {"vnc", false}, {"live", false}, {"input", source.controllable()}, {"displays", displays}}));
+                    {"heads", int(source.heads.size())}, {"vnc", false}, {"live", false}, {"input", source.controllable()},
+                    {"displays", displays}}));
     }
     return out;
   }
 
   std::string headPng(const std::string& id, int head, bool fresh) override {
-    if (head != 0) fail("Head is not configured", 404);
-    return frame(get(id), fresh)->png;
+    auto& source = get(id);
+    if (head < 0 || size_t(head) >= source.heads.size()) fail("Head is not configured", 404);
+    return frame(*source.heads[size_t(head)], fresh)->png;
   }
 
   std::string previewPng(const std::string& id, int width) override {
-    auto captured = frame(get(id), false);
+    auto& source = get(id);
     width = std::clamp(width, 128, 4096);
-    if (captured->image.width <= width) return captured->png;
-    return encodePng(resizeImage(captured->image, width));
+    if (source.heads.size() == 1) {
+      auto captured = frame(*source.heads[0], false);
+      if (captured->image.width <= width) return captured->png;
+      return encodePng(resizeImage(captured->image, width));
+    }
+    // Every display side by side; a display that fails to capture is left out.
+    std::vector<Image> images;
+    std::string problem = "No display available";
+    for (size_t head = 0; head < source.heads.size(); head++) {
+      try {
+        images.push_back(frame(*source.heads[head], false)->image);
+      } catch (const std::exception& e) {
+        if (head == 0) problem = e.what();
+      }
+    }
+    if (images.empty()) fail(problem, 502);
+    return encodePng(resizeImage(combineImages(images), width));
   }
 
   void input(const std::string& id, int head, const Json& raw) override {
     auto& source = get(id);
-    if (head != 0) fail("Head is not configured", 404);
+    if (head < 0 || size_t(head) >= source.heads.size()) fail("Head is not configured", 404);
     if (!source.controllable()) fail("No HID plugin is configured", 403);
     Json events = inputEvents(raw);
-    if (source.device) return source.device->apply(events);
+    if (source.device) return source.device->apply(head, events);
     std::unique_lock<std::timed_mutex> lock(source.hidMutex, std::defer_lock);
     if (!lock.try_lock_for(std::chrono::seconds(1))) fail("HID plugin busy", 503);
     runPlugin(source.hid, obj({{"head", head}, {"events", events}}).dump() + "\n", 4096);
@@ -172,13 +196,23 @@ class PhysicalHost : public HostApi {
     int64_t time;
   };
 
-  struct Source {
-    std::string name, capture, hid;
-    std::shared_ptr<HidDevice> device;
-    bool controllable() const { return device || !hid.empty(); }
-    std::timed_mutex captureMutex, hidMutex;
+  struct Head {
+    std::string capture;
+    std::timed_mutex captureMutex;
     std::mutex frameMutex;
     std::shared_ptr<Frame> frame;
+  };
+
+  struct Source {
+    std::string name, hid;
+    std::vector<std::unique_ptr<Head>> heads;
+    std::shared_ptr<HidDevice> device;
+    bool controllable() const { return device || !hid.empty(); }
+    void addHead(std::string capture) {
+      heads.push_back(std::make_unique<Head>());
+      heads.back()->capture = std::move(capture);
+    }
+    std::timed_mutex hidMutex;
   };
 
   Source& get(const std::string& id) {
@@ -187,7 +221,7 @@ class PhysicalHost : public HostApi {
     return *found->second;
   }
 
-  std::shared_ptr<Frame> frame(Source& source, bool fresh) {
+  std::shared_ptr<Frame> frame(Head& source, bool fresh) {
     std::unique_lock<std::timed_mutex> capture(source.captureMutex, std::defer_lock);
     if (!capture.try_lock_for(std::chrono::seconds(3))) fail("Capture plugin busy", 503);
     {

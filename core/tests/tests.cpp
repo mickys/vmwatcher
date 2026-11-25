@@ -542,6 +542,8 @@ static void testPhysicalAgent() {
   Json sources = Json::Array{};
   sources.push(obj({{"id", id}, {"name", "Physical test"}, {"capture", capture}, {"hid", hid}}));
   sources.push(obj({{"id", viewOnly}, {"name", "Capture only"}, {"capture", capture}}));
+  const std::string twoHeads = "cccccccc-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+  sources.push(obj({{"id", twoHeads}, {"name", "Two displays"}, {"capture", Json::Array{Json(capture), Json(capture)}}}));
   writeFileAtomic(root + "/physical.json", obj({{"sources", sources}}).dump());
 
   Options options;
@@ -553,7 +555,13 @@ static void testPhysicalAgent() {
   CHECK(httpCall(Url{"127.0.0.1", port}, "GET", "/agent/v1/vms").status == 401);
   auto host = makeAgentHost("http://127.0.0.1:" + std::to_string(port), agentToken(root, false));
   CHECK(host->info()["mode"].str() == "physical");
-  CHECK(host->inventory().arr().size() == 2 && host->inventory().arr()[0]["kind"].str() == "physical");
+  CHECK(host->inventory().arr().size() == 3 && host->inventory().arr()[0]["kind"].str() == "physical");
+  Json listed = host->inventory();
+  for (const Json& vm : listed.arr())
+    if (vm["id"].str() == twoHeads) CHECK(vm["heads"].integer() == 2 && vm["displays"].arr().size() == 2 && !vm["input"].boolean());
+  CHECK(decodeScreenshot(host->headPng(twoHeads, 1, true)).width == 2);
+  CHECK(decodeScreenshot(host->previewPng(twoHeads, 1024)).width == 2 + 8 + 2);  // side by side, 8 px gap
+  THROWS(host->headPng(twoHeads, 2, false));
   CHECK(decodeScreenshot(host->headPng(id, 0, true)).rgb == bytes({255, 0, 0, 0, 255, 0}));
   CHECK(decodeScreenshot(host->previewPng(id, 128)).width == 2);
   THROWS(host->headPng(id, 1, false));
@@ -653,11 +661,11 @@ static void testS2Kvm() {
   auto device = makeHidDevice(config);
 
   // Keys go out as HID usages on one authenticated session.
-  device->apply(inputEvents(Json::parse(R"([{"type":"key","data":{"down":true,"key":{"type":"qcode","data":"shift"}}},
+  device->apply(0, inputEvents(Json::parse(R"([{"type":"key","data":{"down":true,"key":{"type":"qcode","data":"shift"}}},
     {"type":"key","data":{"down":true,"key":{"type":"qcode","data":"a"}}},{"type":"key","data":{"down":false,"key":{"type":"qcode","data":"a"}}}])")));
   CHECK((dongle.take() == std::vector<std::string>{"down 225", "down 4", "up 4"}));
   // The first pointer move homes to the corner, then moves in steps of at most 127.
-  device->apply(inputEvents(Json::parse(R"([{"type":"abs","data":{"axis":"x","value":32767}},{"type":"abs","data":{"axis":"y","value":16384}}])")));
+  device->apply(0, inputEvents(Json::parse(R"([{"type":"abs","data":{"axis":"x","value":32767}},{"type":"abs","data":{"axis":"y","value":16384}}])")));
   auto moves = dongle.take();
   int homes = 0, sx = 0, sy = 0;
   for (const auto& line : moves) {
@@ -669,20 +677,20 @@ static void testS2Kvm() {
   }
   CHECK(homes == 11 && sx == 999 && sy == 250);  // ceil(1000/127) + 3 homing steps
   // A click re-homes first (pointer acceleration drifts), then presses and releases.
-  device->apply(inputEvents(Json::parse(R"([{"type":"btn","data":{"button":"left","down":true}},{"type":"btn","data":{"button":"left","down":false}},
+  device->apply(0, inputEvents(Json::parse(R"([{"type":"btn","data":{"button":"left","down":true}},{"type":"btn","data":{"button":"left","down":false}},
     {"type":"btn","data":{"button":"wheel-down","down":true}},{"type":"btn","data":{"button":"wheel-down","down":false}}])")));
   auto click = dongle.take();
   CHECK(click.size() >= 4 && click[0] == "mouse -127 -127 0 0 0");
   CHECK(click[click.size() - 3] == "mouse 0 0 0 0 1" && click[click.size() - 2] == "mouse 0 0 0 0 0" && click.back() == "mouse 0 0 -1 0 0");
   // Unmapped keys are skipped; a refused command reports an error.
-  device->apply(inputEvents(Json::parse(R"([{"type":"key","data":{"down":true,"key":{"type":"qcode","data":"unmapped"}}}])")));
+  device->apply(0, inputEvents(Json::parse(R"([{"type":"key","data":{"down":true,"key":{"type":"qcode","data":"unmapped"}}}])")));
   CHECK(dongle.take().empty());
   {
     std::lock_guard<std::mutex> lock(dongle.mutex);
     CHECK(dongle.sessions == 1 && dongle.rejected == 0);
   }
   // Holding a key keeps it alive past the dongle's 3 s release.
-  device->apply(inputEvents(Json::parse(R"([{"type":"key","data":{"down":true,"key":{"type":"qcode","data":"ctrl"}}}])")));
+  device->apply(0, inputEvents(Json::parse(R"([{"type":"key","data":{"down":true,"key":{"type":"qcode","data":"ctrl"}}}])")));
   usleep(2300000);
   auto held = dongle.take();
   CHECK(held.size() >= 2 && held[0] == "down 224" && held[1] == "mouse 0 0 0 0 0");
@@ -705,24 +713,43 @@ static void testS2Kvm() {
     }
   };
   int px = 0, py = 0, homing = 0;
-  bios->apply(inputEvents(Json::parse(R"([{"type":"abs","data":{"axis":"x","value":32767}},{"type":"abs","data":{"axis":"y","value":16384}}])")));
+  bios->apply(0, inputEvents(Json::parse(R"([{"type":"abs","data":{"axis":"x","value":32767}},{"type":"abs","data":{"axis":"y","value":16384}}])")));
   measure(dongle.take(), px, py, homing);
   CHECK(homing == 9 && px == 1023 && py == 384);  // ceil(1024 / 180 per report) + 3
-  bios->apply(inputEvents(Json::parse(R"([{"type":"abs","data":{"axis":"x","value":100}},{"type":"abs","data":{"axis":"y","value":32767}}])")));
+  bios->apply(0, inputEvents(Json::parse(R"([{"type":"abs","data":{"axis":"x","value":100}},{"type":"abs","data":{"axis":"y","value":32767}}])")));
   measure(dongle.take(), px, py, homing);
   CHECK(homing == 9 && px == 3 && py == 768);  // 383 px down rounds to 32 whole steps
-  bios->apply(inputEvents(Json::parse(R"([{"type":"abs","data":{"axis":"y","value":0}}])")));
+  bios->apply(0, inputEvents(Json::parse(R"([{"type":"abs","data":{"axis":"y","value":0}}])")));
   measure(dongle.take(), px, py, homing);
   CHECK(py == 0);  // tracking clamped to 767 at the edge, so the way back is exact
   // Without rehomeOnClick (the divided default) a click does not jump to the corner.
-  bios->apply(inputEvents(Json::parse(R"([{"type":"btn","data":{"button":"left","down":true}},{"type":"btn","data":{"button":"left","down":false}}])")));
+  bios->apply(0, inputEvents(Json::parse(R"([{"type":"btn","data":{"button":"left","down":true}},{"type":"btn","data":{"button":"left","down":false}}])")));
   CHECK((dongle.take() == std::vector<std::string>{"mouse 0 0 0 0 1", "mouse 0 0 0 0 0"}));
   bios.reset();
+  // Two displays side by side: display 2 starts at x 1024; switching displays re-homes.
+  dongle.take();
+  Json dual = divided;
+  dual.set("displays", Json::Array{Json(Json::Array{Json(0), Json(0), Json(1024), Json(768)}),
+                                   Json(Json::Array{Json(1024), Json(0), Json(1024), Json(768)})});
+  auto desk = makeHidDevice(dual);
+  px = py = homing = 0;
+  desk->apply(0, inputEvents(Json::parse(R"([{"type":"abs","data":{"axis":"x","value":16384}},{"type":"abs","data":{"axis":"y","value":0}}])")));
+  measure(dongle.take(), px, py, homing);
+  CHECK(homing == 15 && px == 513 && py == 0);  // ceil(2048 / 180) + 3 homing reports
+  desk->apply(1, inputEvents(Json::parse(R"([{"type":"abs","data":{"axis":"x","value":0}},{"type":"abs","data":{"axis":"y","value":16384}}])")));
+  measure(dongle.take(), px, py, homing);
+  CHECK(homing == 30 && px == 1023 && py == 384);  // re-homed, then 1024 rounds to 85 steps + 1 small
+  desk->apply(1, inputEvents(Json::parse(R"([{"type":"abs","data":{"axis":"x","value":32767}}])")));
+  measure(dongle.take(), px, py, homing);
+  CHECK(homing == 30 && px == 2046);  // same display: no re-home; 2047 within one small step
+  THROWS(desk->apply(2, inputEvents(Json::parse(R"([{"type":"abs","data":{"axis":"x","value":1}}])"))));
+  THROWS(makeHidDevice([&] { Json bad = divided; bad.set("displays", Json::Array{Json(Json::Array{Json(0), Json(0), Json(10)})}); return bad; }()));
+  desk.reset();
   // A wrong key is rejected by the dongle and reported, not retried forever.
   device.reset();
   writeFileAtomic(root + "/kvm.key", std::string(64, 'a') + "\n");
   auto wrong = makeHidDevice(config);
-  THROWS(wrong->apply(inputEvents(Json::parse(R"([{"type":"key","data":{"down":true,"key":{"type":"qcode","data":"a"}}}])"))));
+  THROWS(wrong->apply(0, inputEvents(Json::parse(R"([{"type":"key","data":{"down":true,"key":{"type":"qcode","data":"a"}}}])"))));
   {
     std::lock_guard<std::mutex> lock(dongle.mutex);
     CHECK(dongle.rejected == 1);

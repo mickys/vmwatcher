@@ -77,8 +77,10 @@ starting the agent. Use a stable ID from `uuidgen` for each computer.
 }
 ```
 
-The file selects physical-source mode for that agent. Each entry supplies one
-display. Use a separate agent instance if the same host should also list
+The file selects physical-source mode for that agent. `capture` is one plugin
+path, or an array of up to four paths, one per display of that computer.
+Live video streams the first display; the others refresh once a second, as
+for multi-monitor VMs, and previews show all of them side by side. Use a separate agent instance if the same host should also list
 libvirt guests. Restart the agent after changing the file.
 
 Install or update the agent with
@@ -106,7 +108,8 @@ TCP 8889 after an HMAC-SHA256 challenge:
   "port": 8889,
   "keyFile": "/opt/vmwatcher/agent-data/s2-kvm.key",
   "screen": [1024, 768],
-  "pointer": { "model": "divided", "divisor": 8, "step": 12, "small": 3 }
+  "pointer": { "model": "divided", "divisor": 8, "step": 12, "small": 3 },
+  "displays": [[0, 0, 1024, 768], [1024, 0, 1024, 768]]
 }
 ```
 
@@ -139,6 +142,12 @@ TCP 8889 after an HMAC-SHA256 challenge:
   - The settings fit one environment. A computer that boots from UEFI setup
     into an OS with a different pointer response needs `physical.json` changed
     and the agent restarted.
+- `displays` places each display in the pointer space as
+  `[x, y, width, height]`, in the same order as `capture`. Without it there is
+  one display covering `screen`. Homing goes to the top-left of all displays,
+  so they should share a top edge. Input that switches to another display
+  re-homes first, which keeps tracking right when a display is not shown
+  (UEFI setup drives only one output).
 - QEMU key names from the viewer are mapped to USB HID keyboard usages; keys
   without a mapping are ignored.
 - The session is authenticated but not encrypted. Keep the dongle and the agent
