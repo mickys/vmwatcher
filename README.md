@@ -139,7 +139,9 @@ Server certificates last 397 days; re-run `make-certs.sh` with the same
 directory and names to renew. Without the two TLS flags the service speaks
 plain HTTP, which is how the demo and the tests run.
 
-The first visit asks for the shared password. To reset a forgotten one:
+The first visit asks for the shared password. The server stores session hashes
+and expiry times in `sessions.json` in its data directory so valid sessions
+survive a restart. To reset a forgotten one:
 `echo 'new password' | vmwatcher passwd --data <data dir>`, then restart.
 
 ## Security model

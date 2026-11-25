@@ -48,6 +48,10 @@ globalThis.fetch = async (input, init = {}) => {
     return json({ ok: true });
   }
   if (!server.authenticated) return json({ error: "Sign in first" }, 401);
+  if (url.pathname === "/api/logout") {
+    server.authenticated = false;
+    return json({ ok: true });
+  }
   if (url.pathname === "/api/vms") return json({ hosts: server.hosts, vms: server.vms });
   if (url.pathname === "/api/groups") return json({ groups: server.groups });
   if (url.pathname === "/api/audits") return json({ audits: [] });
@@ -182,7 +186,102 @@ test("first run, wall, control and settings", async () => {
   assert.deepEqual(orderedNames(), ["alpha", "gamma", "beta"]);
   assert.ok($(".wall.custom-size"));
 
+  const fitColumns = $("#wall-fit-columns");
+  assert.equal(fitColumns.value, "");
+  assert.equal(fitColumns.selectedOptions[0].textContent, "Custom sizes");
+  await act(async () => {
+    fitColumns.value = "0";
+    fitColumns.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+  assert.ok($(".wall.fit-width"));
+  assert.equal(alpha.style.width, "");
+  assert.equal(alpha.style.height, "");
+  assert.deepEqual(orderedNames(), ["alpha", "gamma", "beta"]);
+  assert.equal(fitColumns.value, "0");
+  await act(async () => {
+    fitColumns.value = "2";
+    fitColumns.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+  assert.equal(wall.style.getPropertyValue("--wall-columns"), "2");
+  assert.ok($(".wall.fit-width"));
+  assert.equal(wall.style.getPropertyValue("--wall-rows"), "2");
+  assert.equal(JSON.parse(localStorage.getItem("vmw-layouts"))[""].fit, 2);
+  await pointer(northWest, "pointerdown", 100, 100);
+  await pointer(northWest, "pointermove", 60, 70);
+  assert.ok($(".wall.fit-width"));
+  assert.equal(wall.style.getPropertyValue("--wall-columns"), "2");
+  await pointer(northWest, "pointerup", 60, 70);
+  assert.ok($(".wall.fit-width"));
+  assert.equal(fitColumns.value, "2");
+  assert.equal(alpha.style.width, "680px");
+  assert.equal($$('.card').find((card) => card.querySelector(".vm-name").textContent === "gamma").style.width, "");
+  await click(byText("button", "Reset sizes"));
+  assert.equal(fitColumns.value, "");
+  assert.equal(fitColumns.selectedOptions[0].textContent, "Default sizes");
+  assert.equal($(".wall.fit-width, .wall.custom-size"), null);
+  assert.equal(JSON.parse(localStorage.getItem("vmw-layouts"))[""].sizes, undefined);
+  assert.deepEqual(orderedNames(), ["alpha", "gamma", "beta"]);
+
   assert.ok($(".header-actions #capture-selected"));
+
+  const preview = $(".bar label select");
+  assert.equal(preview.value, "10000");
+  await act(async () => {
+    preview.value = "2000";
+    preview.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+  await type($("#vm-sidebar input[type=search]"), "alpha");
+  const hidden = Object.getOwnPropertyDescriptor(document, "hidden");
+  Object.defineProperty(document, "hidden", { configurable: true, value: true });
+  await click(byText("button", "Live selected"));
+  assert.match($("#live-count").textContent, /Live 1\/6/);
+  await click(byText("button", "Sign out"));
+  assert.match($(".gate-card").textContent, /Enter the viewer password/);
+  server.authenticated = true;
+  await act(async () => root.render(createElement(App, { key: "signed-in-again" })));
+  await settle();
+  assert.equal($(".bar label select").value, "2000");
+  assert.equal($("#vm-sidebar input[type=search]").value, "alpha");
+  assert.match($("#live-count").textContent, /Live 1\/6/);
+  await click(byText("button", "Stop live"));
+  if (hidden) Object.defineProperty(document, "hidden", hidden);
+  else delete document.hidden;
+
+  // Double-click opens the full-size display without binding keyboard or mouse.
+  const screen = $(".card .card-screen");
+  await act(async () => screen.dispatchEvent(new MouseEvent("dblclick", { bubbles: true })));
+  await settle();
+  assert.equal(location.hash, "#/view/local/" + id(1));
+  assert.equal($$(".monitor").length, 1);
+  assert.match($(".audit-help").textContent, /View only/);
+  assert.equal($(".monitor .screen").getAttribute("tabindex"), null);
+  assert.equal(byText(".bar a", "Take Control").getAttribute("href"), "#/control/local/" + id(1));
+  const wheel = (media, deltaY) => {
+    const event = new WheelEvent("wheel", { deltaY, bubbles: true, cancelable: true });
+    Object.defineProperties(event, { clientX: { value: 100 }, clientY: { value: 50 } });
+    return media.dispatchEvent(event);
+  };
+  const previewImage = $(".monitor .screen img");
+  assert.equal(wheel(previewImage, -100), false);
+  assert.match(previewImage.style.transform, /scale\(1\.22/);
+  Object.defineProperty(document, "hidden", { configurable: true, value: true });
+  await click(byText(".bar button", "Live primary"));
+  const liveScreen = $(".monitor .screen");
+  const canvas = document.createElement("canvas");
+  liveScreen.querySelector(".vnc-host").append(canvas);
+  assert.equal(wheel(canvas, -100), false);
+  assert.match(canvas.style.transform, /translate\(-22\..+px, -11\..+px\) scale\(1\.22/);
+  liveScreen.classList.add("controlling");
+  const zoomed = canvas.style.transform;
+  assert.equal(wheel(canvas, -100), true);
+  assert.equal(canvas.style.transform, zoomed);
+  liveScreen.classList.remove("controlling");
+  wheel(canvas, 200);
+  assert.equal(canvas.style.transform, "");
+  await click(byText(".bar button", "Stop live primary"));
+  if (hidden) Object.defineProperty(document, "hidden", hidden);
+  else delete document.hidden;
+
 
   // Take Control shows each monitor and arms the control button.
   await go("#/control/local/" + id(1));

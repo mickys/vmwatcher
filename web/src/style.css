@@ -290,6 +290,18 @@ select:focus-visible {
 .card {
   position: relative;
 }
+.wall.fit-width {
+  grid-template-rows: none;
+  grid-auto-rows: max-content;
+  align-content: start;
+  overflow-y: auto;
+}
+.wall.fit-width .card {
+  place-self: start;
+  width: 100%;
+  max-width: 100%;
+  max-height: none;
+}
 /* The tile toolbar floats over the top of the image and only shows while the
    pointer (or keyboard focus) is on the tile, so it costs no height. */
 .card header {
@@ -380,6 +392,10 @@ select:focus-visible {
 .pane .vnc-host {
   position: absolute;
   inset: 0;
+  overflow: hidden;
+}
+.pane .vnc-host video {
+  display: block;
 }
 .off-screen {
   color: #a1aebd;
@@ -626,7 +642,7 @@ dialog a {
   }
   .wall-layout {
     grid-template-columns: 1fr;
-    grid-template-rows: auto auto;
+    grid-template-rows: auto minmax(0, 1fr);
   }
   .wall-layout.no-sidebar {
     grid-template-rows: minmax(0, 1fr);
@@ -1019,4 +1035,30 @@ summary {
 .card:hover .resize-se, .card:focus-within .resize-se { opacity: 1; }
 @media (hover: none) {
   .card .resize-se { opacity: 1; }
+}
+
+.live-fps {
+  position: absolute;
+  left: 8px;
+  bottom: 8px;
+  z-index: 2;
+  padding: 3px 6px;
+  border-radius: 4px;
+  background: #111a24dc;
+  color: #fff;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+  visibility: hidden;
+}
+.card:hover .live-fps,
+.card:focus-within .live-fps,
+.screen:hover .live-fps,
+.screen:focus-within .live-fps {
+  visibility: visible;
+}
+
+.screen:has(.display-zoomed),
+.screen .vnc-host:has(.display-zoomed) {
+  overflow: clip;
 }

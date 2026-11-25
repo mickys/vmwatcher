@@ -11,7 +11,7 @@ import { byState, canLive, isActive, liveNote } from "../lib/model.js";
 
 // Every monitor of one VM at full size: per-monitor captures, an optional live
 // console for the primary monitor, keyboard/mouse control and saved audits.
-export function Control({ vmKey }) {
+export function Control({ vmKey, viewOnly = false, initiallyLive = false }) {
   const { inventory } = useShell();
   const vm = inventory.vms.find((item) => item.key === vmKey);
   useEffect(() => {
@@ -30,14 +30,15 @@ export function Control({ vmKey }) {
         </div>
       </main>
     );
-  return <ControlVm key={vm.key} vm={vm} />;
+  return <ControlVm key={vm.key} vm={vm} viewOnly={viewOnly} initiallyLive={initiallyLive} />;
 }
 
-function ControlVm({ vm }) {
+function ControlVm({ vm, viewOnly, initiallyLive }) {
   const { session, inventory, notify, bar, captureSlot } = useShell();
-  const controlEnabled = session.settings.controlEnabled && vm.input !== false;
+  const canControl = session.settings.controlEnabled && vm.input !== false;
+  const controlEnabled = !viewOnly && canControl;
   const [native, setNative] = useState(false);
-  const [live, setLive] = useState(false);
+  const [live, setLive] = useState(initiallyLive);
   const [busy, setBusy] = useState(false);
   const [records, setRecords] = useState([]);
   const [saved, setSaved] = useState(null);
@@ -62,6 +63,51 @@ function ControlVm({ vm }) {
     keepAudio(new Set([vm.key]));
     return () => keepAudio(new Set());
   }, [history, vm.key]);
+
+  useEffect(() => {
+    const monitors = monitorsRef.current;
+    let media, zoom = 1, left = 0, top = 0;
+    function reset() {
+      if (!media) return;
+      media.style.removeProperty("transform");
+      media.style.removeProperty("transform-origin");
+      media.classList.remove("display-zoomed");
+      zoom = 1;
+      left = top = 0;
+    }
+    function onWheel(event) {
+      const screen = event.target.closest(".screen");
+      if (!screen || screen.classList.contains("controlling") || event.ctrlKey || !event.deltaY) return;
+      const nextMedia = screen.querySelector(".vnc-host canvas, .vnc-host video, img");
+      if (!nextMedia) return;
+      const box = nextMedia.getBoundingClientRect();
+      if (!box.width || !box.height) return;
+      event.preventDefault();
+      if (media !== nextMedia) {
+        reset();
+        media = nextMedia;
+      }
+      const units = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? screen.clientHeight : 1;
+      const nextZoom = Math.min(6, Math.max(1, zoom * Math.exp(-event.deltaY * units * 0.002)));
+      if (nextZoom === zoom) return;
+      if (nextZoom === 1) {
+        reset();
+        return;
+      }
+      const change = 1 - nextZoom / zoom;
+      left += (event.clientX - box.left) * change;
+      top += (event.clientY - box.top) * change;
+      zoom = nextZoom;
+      media.style.transformOrigin = "top left";
+      media.style.transform = `translate(${left}px, ${top}px) scale(${zoom})`;
+      media.classList.add("display-zoomed");
+    }
+    monitors.addEventListener("wheel", onWheel, { passive: false });
+    return () => {
+      monitors.removeEventListener("wheel", onWheel);
+      reset();
+    };
+  }, [liveOn, native]);
 
   // The control library drives the monitors and its button directly, so React
   // leaves that button's contents alone.
@@ -100,9 +146,9 @@ function ControlVm({ vm }) {
     <>
       <select
         id="audit-vm"
-        aria-label="VM to control"
+        aria-label={viewOnly ? "VM to view" : "VM to control"}
         value={vm.key}
-        onChange={(e) => (location.hash = "#/control/" + e.target.value)}
+        onChange={(e) => (location.hash = (viewOnly ? "#/view/" : "#/control/") + e.target.value)}
       >
         {inventory.hosts.map((host) => (
           <optgroup key={host.id} label={host.name}>
@@ -121,7 +167,9 @@ function ControlVm({ vm }) {
       <button disabled={!!note} title={note} onClick={() => setLive(!liveOn)}>
         {liveOn ? "Stop live primary" : "Live primary"}
       </button>
-      {controlEnabled ? (
+      {viewOnly ? (
+        canControl && <a className="button" href={`#/control/${vm.key}${liveOn ? "?live=1" : ""}`}>Take Control</a>
+      ) : controlEnabled ? (
         <button ref={controlButton} />
       ) : (
         <button disabled title="Keyboard and mouse control is turned off in Settings">
@@ -178,7 +226,7 @@ function ControlVm({ vm }) {
                       onGiveUp={() => {
                         setLive(false);
                         notify(
-                          vm.name + ": the console refused the live viewer. Another VNC client may be holding it exclusively.",
+                          vm.name + ": live view is unavailable. The display is back on previews.",
                           true,
                         );
                       }}

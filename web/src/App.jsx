@@ -9,8 +9,8 @@ export const ShellContext = createContext(null);
 export const useShell = () => useContext(ShellContext);
 
 function parseRoute() {
-  const control = location.hash.match(/^#\/control\/([a-z0-9-]{1,32})\/([0-9a-f-]{36})$/);
-  if (control) return { view: "control", key: control[1] + "/" + control[2] };
+  const detail = location.hash.match(/^#\/(control|view)\/([a-z0-9-]{1,32})\/([0-9a-f-]{36})(\?live=1)?$/);
+  if (detail) return { view: detail[1], key: detail[2] + "/" + detail[3], live: !!detail[4] };
   if (location.hash === "#/control") return { view: "control", key: null };
   if (location.hash === "#/settings") return { view: "settings" };
   return { view: "wall" };
@@ -211,7 +211,8 @@ function Shell({ session, reload }) {
         </div>
       )}
       {route.view === "wall" && <Wall />}
-      {route.view === "control" && <Control vmKey={route.key} />}
+      {(route.view === "control" || route.view === "view") &&
+        <Control key={route.view} vmKey={route.key} viewOnly={route.view === "view"} initiallyLive={route.live} />}
       {route.view === "settings" && <Settings />}
     </BandwidthProvider></ShellContext.Provider>
   );

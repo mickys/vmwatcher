@@ -491,7 +491,22 @@ static void testServices() {
   CHECK(c.call("POST", "/api/password", R"({"current":"nope-nope","password":"second-password"})").status == 403);
   CHECK(c.call("POST", "/api/password", R"({"current":"first-password","password":"second-password"})").status == 200);
   CHECK(c.call("GET", "/api/vms").status == 200 && other.call("GET", "/api/vms").status == 401);
+  server.stop();
+  std::unique_ptr<Server> restarted;
+  auto restartCentral = [&] {
+    restarted.reset();
+    central = makeCentral(options);
+    restarted = std::make_unique<Server>([&](Request& req, Conn& conn) { return central->handle(req, conn); });
+    c.url.port = restarted->listen("127.0.0.1", 0);
+    other.url.port = c.url.port;
+    restarted->start();
+  };
+  CHECK(readFile(options.data + "/sessions.json").find(c.cookie.substr(c.cookie.find('=') + 1)) == std::string::npos);
+  restartCentral();
+  CHECK(c.call("GET", "/api/vms").status == 200 && other.call("GET", "/api/vms").status == 401);
   CHECK(c.call("POST", "/api/logout").status == 200 && c.call("GET", "/api/vms").status == 401);
+  restartCentral();
+  CHECK(c.call("GET", "/api/vms").status == 401);
   Json saved = Json::parse(readFile(options.data + "/config.json"));
   CHECK(saved["settings"]["siteName"].str() == "VM Watcher" && verifyPassword(saved["password"], "second-password"));
   CHECK(readFile(options.data + "/config.json").find("second-password") == std::string::npos);
@@ -502,7 +517,7 @@ static void testServices() {
   CHECK(locked >= 1);
   CHECK(c.call("POST", "/api/login", R"({"password":"second-password"})").status == 429);
 
-  server.stop();
+  restarted.reset();
   agentServer.stop();
   removeTree(root);
 }

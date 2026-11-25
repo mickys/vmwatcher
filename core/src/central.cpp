@@ -95,6 +95,7 @@ class Central : public Service {
       }
       config_.set("hosts", hosts);
     }
+    loadSessions();
     rebuildHosts();
     if (!options_.demo) updates_.start();
   }
@@ -277,27 +278,76 @@ class Central : public Service {
     }
     return "";
   }
+  void loadSessions() {
+    const std::string path = options_.data + "/sessions.json";
+    if (!config_["password"].isObject() || !fileExists(path)) return;
+    try {
+      const Json stored = Json::parse(readFile(path, 65536));
+      if (stored["passwordId"].str() != hex(sha256(config_["password"].dump()))) return;
+      const int64_t now = nowMs();
+      for (const auto& entry : stored["expires"].obj()) {
+        if (sessions_.size() >= 256) break;
+        if (entry.first.size() == 64 && entry.first.find_first_not_of("0123456789abcdef") == std::string::npos &&
+            entry.second.integer() > now)
+          sessions_[entry.first].expires = entry.second.integer();
+      }
+    } catch (const std::exception& e) {
+      logLine(std::string("Could not restore viewer sessions: ") + e.what());
+    }
+  }
+
+  void saveSessionsLocked() {
+    const int64_t now = nowMs();
+    Json expires = Json::Object{};
+    for (const auto& entry : sessions_)
+      if (entry.second.expires > now) expires.set(entry.first, entry.second.expires);
+    writeFileAtomic(options_.data + "/sessions.json",
+                    obj({{"passwordId", hex(sha256(config_["password"].dump()))}, {"expires", expires}}).dump());
+    lastSessionSave_ = now;
+  }
+
   std::string session(const Request& req, bool touch = true) {
-    std::string key = cookie(req);
-    if (key.size() != 64) return "";
+    std::string token = cookie(req);
+    if (token.size() != 64) return "";
+    std::string key = hex(sha256(token));
     std::lock_guard<std::mutex> lock(mutex_);
     auto found = sessions_.find(key);
-    if (found == sessions_.end() || found->second.expires < nowMs()) return "";
-    if (touch) found->second.expires = nowMs() + settingsLocked()["sessionHours"].integer() * 3600000;
+    const int64_t now = nowMs();
+    if (found == sessions_.end() || found->second.expires <= now) return "";
+    if (touch) {
+      found->second.expires = now + settingsLocked()["sessionHours"].integer() * 3600000;
+      // Activity extends the server-side expiry without writing on every frame.
+      if (now - lastSessionSave_ >= 3600000) {
+        lastSessionSave_ = now;
+        try {
+          saveSessionsLocked();
+        } catch (const std::exception& e) {
+          logLine(std::string("Could not save viewer session activity: ") + e.what());
+        }
+      }
+    }
     return key;
   }
-  Response withSession(Response res) {
-    std::string key = randomHex(32);
+  Response withSession(Response res, const Json& passwordRecord) {
+    std::string token = randomHex(32);
+    std::string key = hex(sha256(token));
     int64_t hours;
     {
       std::lock_guard<std::mutex> lock(mutex_);
+      if (config_["password"].dump() != passwordRecord.dump()) fail("Password changed. Sign in again", 401);
       for (auto it = sessions_.begin(); it != sessions_.end();)
         it = it->second.expires < nowMs() && it->second.live == 0 ? sessions_.erase(it) : std::next(it);
       if (sessions_.size() >= 256) fail("Too many sessions; try again later", 503);
       hours = settingsLocked()["sessionHours"].integer();
       sessions_[key].expires = nowMs() + hours * 3600000;
+      try {
+        saveSessionsLocked();
+      } catch (...) {
+        sessions_.erase(key);
+        throw;
+      }
     }
-    res.headers.push_back({"Set-Cookie", std::string(kCookie) + "=" + key + cookieFlags() + "; Max-Age=" +
+    res.headers.push_back({"Set-Cookie", std::string(kCookie) + "=" + token + cookieFlags() + "; Max-Age=" +
                                              std::to_string(hours * 3600)});
     return res;
   }
@@ -318,8 +368,7 @@ class Central : public Service {
     entry.first++;
     if (entry.first >= 5) entry.second = nowMs() + std::min<int64_t>(300000, 5000LL << std::min(entry.first - 5, 6));
   }
-  bool passwordMatches(const std::string& password) {
-    Json record;
+  bool passwordMatches(const std::string& password, Json& record) {
     {
       std::lock_guard<std::mutex> lock(mutex_);
       record = config_["password"];
@@ -365,11 +414,12 @@ class Central : public Service {
         saveLocked();
       }
       logLine("Initial password set from " + req.peer);
-      return withSession(Response::json(obj({{"ok", true}})));
+      return withSession(Response::json(obj({{"ok", true}})), record);
     }
     if (parts.size() == 3 && first == "login" && req.method == "POST") {
       throttle(req.peer);
-      if (!passwordMatches(Json::parse(req.body)["password"].str())) {
+      Json record;
+      if (!passwordMatches(Json::parse(req.body)["password"].str(), record)) {
         loginFailed(req.peer);
         logLine("Failed login from " + req.peer);
         usleep(400000);
@@ -379,13 +429,21 @@ class Central : public Service {
         std::lock_guard<std::mutex> lock(mutex_);
         failures_.erase(req.peer);
       }
-      return withSession(Response::json(obj({{"ok", true}})));
+      return withSession(Response::json(obj({{"ok", true}})), record);
     }
     bool meter = req.path == "/api/bandwidth";
     std::string key = session(req, !meter);
     if (parts.size() == 3 && first == "logout" && req.method == "POST") {
       std::lock_guard<std::mutex> lock(mutex_);
-      sessions_.erase(key);
+      auto removed = sessions_.extract(key);
+      if (!removed.empty()) {
+        try {
+          saveSessionsLocked();
+        } catch (...) {
+          sessions_.insert(std::move(removed));
+          throw;
+        }
+      }
       Response res = Response::json(obj({{"ok", true}}));
       res.headers.push_back({"Set-Cookie", std::string(kCookie) + "=" + cookieFlags() + "; Max-Age=0"});
       return res;
@@ -815,7 +873,8 @@ class Central : public Service {
   Response passwordRoute(Request& req, const std::string& key) {
     Json body = Json::parse(req.body);
     throttle(req.peer);
-    if (!passwordMatches(body["current"].str())) {
+    Json current;
+    if (!passwordMatches(body["current"].str(), current)) {
       loginFailed(req.peer);
       usleep(400000);
       return Response::error(403, "The current password is wrong");
@@ -823,10 +882,12 @@ class Central : public Service {
     checkNewPassword(body["password"].str());
     Json record = hashPassword(body["password"].str());
     std::lock_guard<std::mutex> lock(mutex_);
+    if (config_["password"].dump() != current.dump() || !sessions_.count(key)) fail("Sign in again", 401);
     config_.set("password", record);
     saveLocked();
     // Everyone else has to sign in again with the new password.
     for (auto it = sessions_.begin(); it != sessions_.end();) it = it->first == key ? std::next(it) : sessions_.erase(it);
+    saveSessionsLocked();
     logLine("Password changed from " + req.peer);
     return Response::json(obj({{"ok", true}}));
   }
@@ -943,6 +1004,7 @@ class Central : public Service {
   std::vector<std::string> hostOrder_;
   std::map<std::string, Session> sessions_;
   std::map<std::string, std::pair<int, int64_t>> failures_;
+  int64_t lastSessionSave_ = 0;
   int64_t liveTotal_ = 0;
   std::atomic<int> auditPending_{0};
 };

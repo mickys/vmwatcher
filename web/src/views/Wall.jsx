@@ -8,7 +8,7 @@ import { LiveConsole } from "../lib/LiveConsole.jsx";
 import { keepAudio, toggleAudio, useAudio } from "../lib/audio-store.js";
 import { byState, canLive, isActive, liveNote, monitorsOf, parseKeys, wallGrid } from "../lib/model.js";
 
-const stored = (name, legacy) => new Set(parseKeys(localStorage.getItem(name) ?? localStorage.getItem(legacy)));
+const stored = (name, legacy) => new Set(parseKeys(localStorage.getItem(name) ?? (legacy ? localStorage.getItem(legacy) : null)));
 
 function storedLayouts() {
   try {
@@ -31,9 +31,14 @@ export function Wall() {
   const dragging = useRef(null);
   const [resizing, setResizing] = useState(null);
   const layout = layouts[group];
-  const [live, setLive] = useState(() => new Set());
-  const [rate, setRate] = useState(session.settings.previewSeconds * 1000);
-  const [query, setQuery] = useState("");
+  const [live, setLive] = useState(() => stored("vmw-live"));
+  const [rate, setRate] = useState(() => {
+    const saved = localStorage.getItem("vmw-preview-ms");
+    const ms = Number(saved);
+    return saved !== null && Number.isInteger(ms) && ms >= 0 && ms <= 300000 && ms % 1000 === 0
+      ? ms : session.settings.previewSeconds * 1000;
+  });
+  const [query, setQuery] = useState(() => localStorage.getItem("vmw-wall-query") ?? "");
   const [sidebar, setSidebar] = useState(() => localStorage.getItem("vmw-sidebar") !== "0");
   const [shapes, setShapes] = useState(() => new Map());
   const [size, setSize] = useState({ width: 0, height: 0 });
@@ -47,6 +52,8 @@ export function Wall() {
     localStorage.setItem("vmw-group", group);
   }, [selected, manual, group]);
   useEffect(() => localStorage.setItem("vmw-sidebar", sidebar ? "1" : "0"), [sidebar]);
+  useEffect(() => localStorage.setItem("vmw-wall-query", query), [query]);
+  useEffect(() => localStorage.setItem("vmw-live", JSON.stringify([...live])), [live]);
 
   useEffect(() => localStorage.setItem("vmw-layouts", JSON.stringify(layouts)), [layouts]);
   const order = layout?.order;
@@ -68,13 +75,16 @@ export function Wall() {
 
   function startMove(event, key) {
     if (!event.isPrimary || event.button !== 0) return;
-    dragging.current = { key, x: event.clientX, y: event.clientY };
-    wallRef.current.setPointerCapture(event.pointerId);
+    dragging.current = { key, x: event.clientX, y: event.clientY, captured: false };
   }
 
   function dragMove(event) {
     const drag = dragging.current;
     if (!drag || Math.hypot(event.clientX - drag.x, event.clientY - drag.y) < 8) return;
+    if (!drag.captured) {
+      wallRef.current.setPointerCapture(event.pointerId);
+      drag.captured = true;
+    }
     const tile = document.elementFromPoint(event.clientX, event.clientY)?.closest("[data-tile-key]");
     if (!tile || !wallRef.current.contains(tile) || tile.dataset.tileKey === drag.key) return;
     drag.x = event.clientX;
@@ -93,15 +103,19 @@ export function Wall() {
     }));
   }
 
-  // Live consoles and audio only make sense for VMs that are on the wall.
-  useEffect(() => {
-    const keys = new Set(shown.map((vm) => vm.key));
-    keepAudio(keys);
-    setLive((old) => {
-      const next = new Set([...old].filter((key) => keys.has(key)));
-      return next.size === old.size ? old : next;
+  function setTileSizing(fit) {
+    setLayouts((old) => {
+      const next = { ...old[group], fit };
+      delete next.sizes;
+      delete next.spans;
+      return { ...old, [group]: next };
     });
-  }, [shown]);
+  }
+
+  // Wait for inventory to resolve saved live choices, then honor the current limit.
+  const liveCandidates = shown.filter(supportsLive);
+  const activeLive = new Set(liveCandidates.map((vm) => vm.key).filter((key) => live.has(key)).slice(0, maxLive));
+  useEffect(() => keepAudio(new Set(shown.map((vm) => vm.key))), [shown]);
   useEffect(() => () => keepAudio(new Set()), []);
 
   useLayoutEffect(() => {
@@ -112,13 +126,21 @@ export function Wall() {
   }, []);
 
   const aspectOf = (vm) => shapes.get(vm.key)?.aspect || (16 / 9) * (isActive(vm) ? Math.min(vm.heads, 4) : 1);
-  const grid = wallGrid(shown.map(aspectOf), size.width, size.height);
-  const customSize = !!resizing || shown.some((vm) => layout?.sizes?.[vm.key] || layout?.spans?.[vm.key] > 1);
+  const fitColumns = [1, 2, 3, 4].includes(layout?.fit) ? layout.fit : 0;
+  const fitWidth = !!layout?.fit;
+  const widthColumns = Math.max(1, Math.floor((size.width + 6) / (320 + 6)));
+  const columns = Math.min(fitWidth ? fitColumns || widthColumns : 0, shown.length);
+  const grid = columns
+    ? { columns, rows: Math.ceil(shown.length / columns) }
+    : wallGrid(shown.map(aspectOf), size.width, size.height);
+  const hasSavedSizes = shown.some((vm) => layout?.sizes?.[vm.key] || layout?.spans?.[vm.key] > 1);
+  const customSize = !fitWidth && (!!resizing || hasSavedSizes);
   const autoWidth = Math.max(1, (size.width - (grid.columns - 1) * 6) / grid.columns);
   const autoHeight = Math.max(1, (size.height - (grid.rows - 1) * 6) / grid.rows);
   const tileSize = (vm) => {
     if (resizing?.key === vm.key) return resizing.dimensions;
     if (layout?.sizes?.[vm.key]) return layout.sizes[vm.key];
+    if (!customSize) return null;
     const span = layout?.spans?.[vm.key] || 1;
     const width = Math.min(autoWidth, autoHeight * aspectOf(vm)) * span;
     return { width, height: width / aspectOf(vm) };
@@ -139,13 +161,13 @@ export function Wall() {
       setLive((old) => {
         const next = new Set(old);
         if (next.delete(key)) return next;
-        if (old.size >= maxLive) {
+        if (activeLive.size >= maxLive) {
           notify(`Choose up to ${maxLive} live consoles.`, true);
           return old;
         }
         return next.add(key);
       }),
-    [maxLive, notify],
+    [activeLive.size, maxLive, notify],
   );
   const giveUp = useCallback(
     (vm) => {
@@ -155,8 +177,7 @@ export function Wall() {
         return next;
       });
       notify(
-        vm.name +
-          ": the console refused the live viewer, so the tile is back on previews. Another VNC client may be holding it exclusively.",
+        vm.name + ": live view is unavailable. The tile is back on previews.",
         true,
       );
     },
@@ -165,6 +186,7 @@ export function Wall() {
   const onAudio = useCallback((vm) => toggleAudio(vm, (message) => notify(message, true)), [notify]);
 
   function tick(key, on) {
+    if (!on) setLive((old) => old.has(key) ? new Set([...old].filter((id) => id !== key)) : old);
     setSelected((old) => {
       const next = new Set(old);
       on ? next.add(key) : next.delete(key);
@@ -250,6 +272,26 @@ export function Wall() {
         {sidebar ? "Hide sidebar" : "Show sidebar"}
       </button>
       <span id="selection-count">{shown.length} selected</span>
+      <button disabled={!shown.length} aria-pressed={!!layout?.fit} onClick={() => setTileSizing(fitColumns || true)}>
+        Fit to screen
+      </button>
+      <select
+        id="wall-fit-columns"
+        aria-label="Fit to screen columns"
+        disabled={!shown.length}
+        value={fitWidth ? fitColumns : ""}
+        onChange={(event) => setTileSizing(Number(event.target.value) || true)}
+      >
+        <option value="" disabled>{hasSavedSizes ? "Custom sizes" : "Default sizes"}</option>
+        <option value={0}>Auto columns</option>
+        <option value={1}>1 column</option>
+        <option value={2}>2 columns</option>
+        <option value={3}>3 columns</option>
+        <option value={4}>4 columns</option>
+      </select>
+      <button disabled={!layout?.fit && !layout?.sizes && !layout?.spans} onClick={() => setTileSizing(false)}>
+        Reset sizes
+      </button>
       <button disabled={!selected.size} onClick={askSaveGroup} title="Save the selected VMs as a named group">
         Save to group
       </button>
@@ -265,8 +307,12 @@ export function Wall() {
       )}
       <label>
         Preview{" "}
-        <select value={rate} onChange={(e) => setRate(Number(e.target.value))}>
-          {[...new Set([0, 2000, 5000, 10000, 30000, session.settings.previewSeconds * 1000])]
+        <select value={rate} onChange={(e) => {
+          const ms = Number(e.target.value);
+          setRate(ms);
+          localStorage.setItem("vmw-preview-ms", String(ms));
+        }}>
+          {[...new Set([0, 2000, 5000, 10000, 30000, session.settings.previewSeconds * 1000, rate])]
             .sort((a, b) => a - b)
             .map((ms) => (
               <option key={ms} value={ms}>
@@ -276,10 +322,10 @@ export function Wall() {
         </select>
       </label>
       <button
-        disabled={!shown.some(supportsLive)}
+        disabled={!liveCandidates.length}
         title={`Live view-only console of the primary display for every selected VM (up to ${maxLive})`}
         onClick={() => {
-          const keys = shown.filter(supportsLive).map((vm) => vm.key);
+          const keys = liveCandidates.map((vm) => vm.key);
           setLive(new Set(keys.slice(0, maxLive)));
           if (keys.length > maxLive) notify(`Showing the first ${maxLive} selected live consoles.`);
         }}
@@ -290,7 +336,7 @@ export function Wall() {
         Stop live
       </button>
       <span id="live-count">
-        Live {live.size}/{maxLive}
+        Live {activeLive.size}/{maxLive}
       </span>
     </>
   );
@@ -319,16 +365,19 @@ export function Wall() {
           group={group}
           toggleGroup={toggleGroup}
         />
-        <section className={"wall" + (customSize ? " custom-size" : "")} ref={wallRef}
+        <section className={"wall" + (customSize ? " custom-size" : fitWidth ? " fit-width" : "")} ref={wallRef}
           style={{ "--wall-columns": grid.columns, "--wall-rows": grid.rows }}
-          onPointerMove={dragMove} onPointerUp={stopMove} onPointerCancel={stopMove} onLostPointerCapture={stopMove}>
+          onPointerMove={dragMove} onPointerUp={stopMove} onPointerCancel={stopMove} onLostPointerCapture={stopMove}
+          onPointerLeave={() => { if (!dragging.current?.captured) stopMove(); }}>
           {shown.map((vm, index) => (
             <Card
               onMoveStart={startMove}
               onMove={moveTile}
               previous={shown[index - 1]?.key}
               next={shown[index + 1]?.key}
-              dimensions={customSize ? tileSize(vm) : null}
+              dimensions={tileSize(vm)}
+              columnWidth={fitWidth && size.width > 0 ? autoWidth : null}
+              columns={grid.columns}
               onResize={(dimensions) => setResizing({ key: vm.key, dimensions })}
               onResizeEnd={(dimensions) => {
                 if (dimensions) saveTileSize(vm.key, dimensions);
@@ -337,7 +386,7 @@ export function Wall() {
               encoder={encoder}
               key={vm.key}
               vm={vm}
-              live={live.has(vm.key) && supportsLive(vm)}
+              live={activeLive.has(vm.key)}
               rate={rate}
               aspect={aspectOf(vm)}
               monitors={shapes.get(vm.key)?.monitors ?? (isActive(vm) ? Math.min(vm.heads, 4) : 1)}
@@ -442,7 +491,7 @@ function Sidebar({ query, setQuery, selected, tick, group, toggleGroup }) {
 // per-monitor captures.
 const Card = memo(function Card({
   vm, encoder, live, rate, aspect, monitors, audio, multiHost, hostName, onShape, onLive, onGiveUp, onAudio,
-  onMoveStart, onMove, previous, next, dimensions, onResize, onResizeEnd,
+  onMoveStart, onMove, previous, next, dimensions, columnWidth, columns, onResize, onResizeEnd,
 }) {
   const [status, setStatus] = useState("preview");
   const resize = useRef(null);
@@ -484,10 +533,15 @@ const Card = memo(function Card({
   }, [live]);
   const note = liveNote(vm, encoder);
   const title = (multiHost ? hostName + " · " : "") + `${vm.name} · ${vm.state} · open monitor controls`;
-  const control = "#/control/" + vm.key;
+  const viewing = `#/view/${vm.key}${live ? "?live=1" : ""}`;
+  const control = vm.input === false ? viewing : "#/control/" + vm.key;
+  const span = dimensions && columnWidth
+    ? Math.min(columns, Math.ceil((dimensions.width + 6) / (columnWidth + 6)))
+    : 1;
   return (
     <article className="card" data-tile-key={vm.key}
-      style={{ "--card-aspect": aspect, width: dimensions?.width, height: dimensions?.height }}>
+      style={{ "--card-aspect": aspect, width: dimensions?.width, height: dimensions?.height,
+        gridColumn: span > 1 ? `span ${span}` : undefined }}>
       <header>
         <span className={"dot " + vm.state} title={vm.state} />
         <a className="vm-name" href={control} title={title}>
@@ -525,10 +579,16 @@ const Card = memo(function Card({
         </button>
       </header>
       <div className={"card-screen" + (live ? " live" : "")} tabIndex={0} role="group"
-        aria-label={`Move ${vm.name} with the arrow keys`}
+        aria-label={`Open ${vm.name} with Enter or move it with the arrow keys`}
+        onDoubleClick={() => { location.hash = viewing; }}
         onPointerDown={(event) => onMoveStart(event, vm.key)}
         onDragStart={(event) => event.preventDefault()}
         onKeyDown={(event) => {
+          if (event.key === "Enter") {
+            event.preventDefault();
+            location.hash = viewing;
+            return;
+          }
           const target = ["ArrowLeft", "ArrowUp"].includes(event.key) ? previous :
             ["ArrowRight", "ArrowDown"].includes(event.key) ? next : null;
           if (!target) return;

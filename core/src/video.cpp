@@ -103,7 +103,11 @@ void streamVideo(Conn& browser, HostApi& host, const std::string& id, const std:
   const Encoder* selected = nullptr;
   for (const auto& e : encoders()) if (e.id == choice) selected = &e;
   if (!selected) fail("Selected video encoder unavailable", 503);
-  auto frame = host.headPng(id, 0, true);
+  using Clock = std::chrono::steady_clock;
+  constexpr auto interval = std::chrono::milliseconds(125);
+  auto latest = std::make_shared<const std::string>(host.headPng(id, 0, true));
+  auto lastCapture = Clock::now();
+  std::mutex frameMutex;
   int input[2], output[2];
   if (pipe2(input, O_CLOEXEC)) fail("Encoder pipe unavailable", 503);
   if (pipe2(output, O_CLOEXEC)) {
@@ -115,21 +119,43 @@ void streamVideo(Conn& browser, HostApi& host, const std::string& id, const std:
     close(input[1]); close(output[0]); fail("Cannot start FFmpeg", 503);
   }
   std::atomic<bool> stop{false};
-  std::thread writer([&] {
-    try {
-      while (!stop) {
-        auto next = std::chrono::steady_clock::now() + std::chrono::milliseconds(125);
-        size_t sent = 0;
-        while (sent < frame.size()) {
-          ssize_t n = write(input[1], frame.data()+sent, frame.size()-sent);
-          if (n < 0 && errno == EINTR) continue;
-          if (n <= 0) throw std::runtime_error("Encoder stopped");
-          sent += n;
-        }
-        std::this_thread::sleep_until(next);
-        if (!stop) frame = host.headPng(id, 0, true);
+  // A capture card can be slower than the encoder's declared frame rate.
+  // Sample independently so a slow or temporarily busy source cannot starve playback.
+  std::thread capture([&] {
+    while (!stop) {
+      auto next = Clock::now() + interval;
+      try {
+        auto frame = std::make_shared<const std::string>(host.headPng(id, 0, true));
+        std::lock_guard<std::mutex> lock(frameMutex);
+        latest = std::move(frame);
+        lastCapture = Clock::now();
+      } catch (const std::exception&) {
+        // The writer keeps the last good frame for a short interruption.
       }
-    } catch (const std::exception&) {}
+      std::this_thread::sleep_until(next);
+    }
+  });
+  std::thread writer([&] {
+    while (!stop) {
+      auto next = Clock::now() + interval;
+      std::shared_ptr<const std::string> frame;
+      {
+        std::lock_guard<std::mutex> lock(frameMutex);
+        if (next - lastCapture > std::chrono::seconds(5)) break;
+        frame = latest;
+      }
+      size_t sent = 0;
+      while (sent < frame->size()) {
+        ssize_t n = write(input[1], frame->data() + sent, frame->size() - sent);
+        if (n < 0 && errno == EINTR) continue;
+        if (n <= 0) {
+          stop = true;
+          break;
+        }
+        sent += size_t(n);
+      }
+      std::this_thread::sleep_until(next);
+    }
     close(input[1]);
   });
   bool started = false;
@@ -150,6 +176,7 @@ void streamVideo(Conn& browser, HostApi& host, const std::string& id, const std:
   kill(pid, SIGKILL);
   close(output[0]);
   writer.join();
+  capture.join();
   while (waitpid(pid, nullptr, 0) < 0 && errno == EINTR) {}
   if (!started) fail("Video encoder produced no frames", 503);
 }
