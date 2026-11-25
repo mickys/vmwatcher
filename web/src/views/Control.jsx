@@ -38,6 +38,12 @@ function ControlVm({ vm, viewOnly, initiallyLive }) {
   const canControl = session.settings.controlEnabled && vm.input !== false;
   const controlEnabled = !viewOnly && canControl;
   const [native, setNative] = useState(false);
+  // Several monitors: side by side (default) or one under the other, remembered per browser.
+  const [stacked, setStacked] = useState(() => localStorage.getItem("vmw-monitor-layout") === "stacked");
+  const toggleStacked = () => {
+    localStorage.setItem("vmw-monitor-layout", stacked ? "side" : "stacked");
+    setStacked(!stacked);
+  };
   const [live, setLive] = useState(initiallyLive);
   const [busy, setBusy] = useState(false);
   const [records, setRecords] = useState([]);
@@ -164,6 +170,16 @@ function ControlVm({ vm, viewOnly, initiallyLive }) {
         ))}
       </select>
       <button onClick={() => setNative(!native)}>{native ? "Fit monitors" : "Native pixels"}</button>
+      {vm.heads > 1 && (
+        <button
+          id="monitor-layout"
+          aria-pressed={stacked}
+          title={stacked ? "Show the monitors side by side" : "Show the monitors one under the other"}
+          onClick={toggleStacked}
+        >
+          {stacked ? "Side by side" : "One under the other"}
+        </button>
+      )}
       <button disabled={!!note} title={note} onClick={() => setLive(!liveOn)}>
         {liveOn ? "Stop live primary" : "Live primary"}
       </button>
@@ -200,8 +216,8 @@ function ControlVm({ vm, viewOnly, initiallyLive }) {
       <main className="audit-layout">
         <section
           ref={monitorsRef}
-          className={"monitors" + (native ? " native" : "")}
-          style={{ "--heads": Math.min(vm.heads, 2) }}
+          className={"monitors" + (native ? " native" : "") + (stacked ? " stacked" : "")}
+          style={{ "--heads": stacked ? 1 : Math.min(vm.heads, 2) }}
         >
           {Array.from({ length: vm.heads }, (_, head) => {
             const onConsole = head === 0 && liveOn;

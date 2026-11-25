@@ -29,7 +29,7 @@ const server = {
     { id: "local", name: "hypervisor", type: "local", enabled: true, ok: true, error: "", count: 2 },
     { id: "hv2", name: "Rack B", type: "agent", enabled: true, ok: false, error: "Agent unreachable: timed out", count: 0 },
   ],
-  vms: [vm("local", 1, "alpha", "running"), vm("local", 2, "beta", "shut off"), vm("hv2", 3, "gamma", "running", { live: false, liveNote: "needs the agent" })],
+  vms: [vm("local", 1, "alpha", "running"), vm("local", 2, "beta", "shut off"), vm("hv2", 3, "gamma", "running", { heads: 2, live: false, liveNote: "needs the agent" })],
   groups: [{ name: "Night shift", vms: ["local/" + id(1)] }],
   settings: { videoEncoder: "vnc", siteName: "Lab wall", sessionHours: 12, previewSeconds: 10, maxLivePerSession: 6, maxLiveTotal: 24, controlEnabled: true, allowedHosts: [] },
 };
@@ -291,6 +291,25 @@ test("first run, wall, control and settings", async () => {
   assert.equal($$("#audit-vm optgroup").length, 2);
   assert.match(byText(".bar button", "Click a monitor").textContent, /Click a monitor to control/);
   assert.match($("#history").textContent, /No saved audits yet/);
+  assert.equal($("#monitor-layout"), null); // one monitor: nothing to arrange
+
+  // Two monitors: side by side by default, or one under the other, remembered.
+  await go("#/control/hv2/" + id(3));
+  assert.equal($$(".monitor").length, 2);
+  assert.equal($(".monitors").style.getPropertyValue("--heads"), "2");
+  assert.equal($("#monitor-layout").textContent, "One under the other");
+  await click($("#monitor-layout"));
+  assert.ok($(".monitors.stacked"));
+  assert.equal($(".monitors").style.getPropertyValue("--heads"), "1");
+  assert.equal($("#monitor-layout").textContent, "Side by side");
+  assert.equal($("#monitor-layout").getAttribute("aria-pressed"), "true");
+  assert.equal(localStorage.getItem("vmw-monitor-layout"), "stacked");
+  await go("#/control/local/" + id(1));
+  await go("#/control/hv2/" + id(3));
+  assert.ok($(".monitors.stacked"));
+  await click($("#monitor-layout"));
+  assert.equal($(".monitors").style.getPropertyValue("--heads"), "2");
+  assert.equal(localStorage.getItem("vmw-monitor-layout"), "side");
 
   // Settings: hosts with their status, and the add-host form.
   await go("#/settings");
