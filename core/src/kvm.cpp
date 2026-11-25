@@ -68,7 +68,19 @@ class S2Kvm : public HidDevice {
     if (width_ < 64 || height_ < 64 || width_ > 16384 || height_ > 16384) throw std::runtime_error("hid.screen must be [width, height]");
     gain_ = config["mickeysPerPixel"].num(1.0);
     if (!(gain_ > 0.05 && gain_ < 20)) throw std::runtime_error("hid.mickeysPerPixel is out of range");
-    rehomeOnClick_ = config["rehomeOnClick"].boolean(true);
+    // "linear": the target moves counts x gain (an OS with pointer acceleration off).
+    // "divided": the target moves `step` pixels per whole `divisor` counts in a
+    // report and `small` pixels for a nonzero report below the divisor; measured
+    // on AMI/ASUS UEFI setup as divisor 8, step 12, small 3 in a 1024x768 space.
+    const Json& pointer = config["pointer"];
+    model_ = pointer["model"].str("linear");
+    divisor_ = int(pointer["divisor"].integer(8));
+    step_ = int(pointer["step"].integer(12));
+    small_ = int(pointer["small"].integer(3));
+    if (model_ != "linear" && model_ != "divided") throw std::runtime_error("hid.pointer.model must be linear or divided");
+    if (divisor_ < 1 || divisor_ > 127 || step_ < 1 || step_ > 1000 || small_ < 0 || small_ > step_)
+      throw std::runtime_error("hid.pointer divisor/step/small are out of range");
+    rehomeOnClick_ = config["rehomeOnClick"].boolean(model_ == "linear");
     worker_ = std::thread([this] { maintain(); });
   }
 
@@ -150,9 +162,48 @@ class S2Kvm : public HidDevice {
     return "mouse " + std::to_string(dx) + " " + std::to_string(dy) + " " + std::to_string(wheel) + " 0 " + std::to_string(buttons_);
   }
 
+  // Largest movement of one report, in screen pixels.
+  double maxTravel() const { return model_ == "divided" ? double(127 / divisor_ * step_) : 127.0 / gain_; }
+
+  // Counts per report that move one axis by `delta` pixels. Returns the
+  // distance actually covered, which the divided model rounds to `small`.
+  int plan(int delta, std::vector<int>& counts, double& residual) const {
+    int sign = delta < 0 ? -1 : 1, left = std::abs(delta);
+    if (model_ == "linear") {
+      double want = delta * gain_ + residual;
+      long total = std::lround(want);
+      residual = want - double(total);
+      sign = total < 0 ? -1 : 1;
+      long remaining = std::labs(total);
+      long n = std::max<long>(1, (remaining + 126) / 127);
+      for (long i = 0; i < n && remaining; i++) {
+        long c = remaining / (n - i);
+        counts.push_back(int(sign * c));
+        remaining -= c;
+      }
+      return delta;
+    }
+    int units = left / step_, rest = left - units * step_;
+    int smalls = small_ ? (rest + small_ / 2) / small_ : 0;
+    if (small_ && smalls * small_ >= step_) {  // closer to one more whole step
+      units++;
+      smalls = 0;
+    }
+    int perReport = 127 / divisor_;
+    while (units > 0) {
+      int u = std::min(units, perReport);
+      counts.push_back(sign * u * divisor_);
+      units -= u;
+    }
+    for (int i = 0; i < smalls; i++) counts.push_back(sign);
+    int covered = 0;
+    for (int c : counts) covered += std::abs(c) >= divisor_ ? std::abs(c) / divisor_ * step_ : small_;
+    return sign * covered;
+  }
+
   // Pins the pointer to the top-left corner: overshooting is clamped by the OS.
   void home(std::vector<std::string>& lines) {
-    int steps = int(std::ceil(std::max(width_, height_) * gain_ / 127.0)) + 4;
+    int steps = int(std::ceil(std::max(width_, height_) / maxTravel())) + 3;
     for (int i = 0; i < steps; i++) lines.push_back(mouse(-127, -127, 0));
     x_ = y_ = 0;
     homed_ = true;
@@ -160,20 +211,16 @@ class S2Kvm : public HidDevice {
   }
 
   void moveTo(int tx, int ty, std::vector<std::string>& lines) {
-    double dx = (tx - x_) * gain_ + residualX_, dy = (ty - y_) * gain_ + residualY_;
-    long mx = std::lround(dx), my = std::lround(dy);
-    residualX_ = dx - double(mx);
-    residualY_ = dy - double(my);
-    x_ = tx;
-    y_ = ty;
-    // Split into steps of at most 127 that keep the direction of travel.
-    while (mx || my) {
-      long n = std::max<long>(1, (std::max(std::labs(mx), std::labs(my)) + 126) / 127);
-      int sx = int(mx / n), sy = int(my / n);
-      lines.push_back(mouse(sx, sy, 0));
-      mx -= sx;
-      my -= sy;
-    }
+    std::vector<int> cx, cy;
+    // The divided model cannot reach every pixel; track where the pointer
+    // really is so the rounding never accumulates.
+    x_ += plan(tx - x_, cx, residualX_);
+    y_ += plan(ty - y_, cy, residualY_);
+    x_ = std::clamp(x_, 0, width_ - 1);  // the target clamps the real pointer too
+    y_ = std::clamp(y_, 0, height_ - 1);
+    // Axes are independent on the target, so pair them up to send fewer reports.
+    for (size_t i = 0; i < std::max(cx.size(), cy.size()); i++)
+      lines.push_back(mouse(i < cx.size() ? cx[i] : 0, i < cy.size() ? cy[i] : 0, 0));
   }
 
   // Call with mutex_ held.
@@ -189,8 +236,7 @@ class S2Kvm : public HidDevice {
     if (line.size() != 42 || line.compare(0, 10, "CHALLENGE ") != 0) throw std::runtime_error("unexpected greeting");
     conn->write("auth " + hex(hmacSha256(key, line.substr(10))) + "\n");
     if (!conn->readUntil("\n", 256, line) || trim(line) != "OK") fail("The keyboard/mouse dongle rejected the key", 502);
-    conn_ = std::move(conn);
-    homed_ = false;  // the pointer may have moved while nobody was connected
+    conn_ = std::move(conn);  // drop() already marked the pointer position unknown
     lastSend_ = Clock::now();
   }
 
@@ -257,6 +303,8 @@ class S2Kvm : public HidDevice {
   std::string address_, keyFile_;
   int port_ = 8889, width_ = 1920, height_ = 1080;
   double gain_ = 1.0, residualX_ = 0, residualY_ = 0;
+  std::string model_ = "linear";
+  int divisor_ = 8, step_ = 12, small_ = 3;
   bool rehomeOnClick_ = true;
   std::timed_mutex mutex_;
   std::mutex waitMutex_;

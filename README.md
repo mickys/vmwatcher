@@ -102,9 +102,8 @@ TCP 8889 after an HMAC-SHA256 challenge:
   "address": "192.168.1.98",
   "port": 8889,
   "keyFile": "/opt/vmwatcher/agent-data/s2-kvm.key",
-  "screen": [1920, 1080],
-  "mickeysPerPixel": 1.0,
-  "rehomeOnClick": true
+  "screen": [1024, 768],
+  "pointer": { "model": "divided", "divisor": 8, "step": 12, "small": 3 }
 }
 ```
 
@@ -119,13 +118,24 @@ TCP 8889 after an HMAC-SHA256 challenge:
   without a report. The agent refreshes held keys and buttons once a second,
   and releases them itself when the viewer has sent nothing for 30 s.
 - The mouse is relative only. The agent pins the pointer to the top-left corner
-  with large negative moves, then moves by the difference between positions in
-  `screen` pixels times `mickeysPerPixel`. Set `screen` to the controlled
-  computer's resolution; the capture card cannot report it. Pointer
-  acceleration (Windows "Enhance pointer precision", desktop mouse
-  acceleration) makes positions drift; turn it off on the controlled computer
-  or tune `mickeysPerPixel`. With `rehomeOnClick` each new press starts from
-  the corner again, so clicks land where shown at the cost of a visible jump.
+  with large negative moves, then tracks where it is and sends the reports
+  that reach each new position. How a computer turns counts into pointer
+  movement differs, so `pointer` describes it, in `screen` coordinates:
+  - `"model": "linear"` (default): the pointer moves `mickeysPerPixel` counts
+    per pixel (default 1). Set `screen` to the computer's resolution, which
+    the capture card cannot report, and turn pointer acceleration off on the
+    computer (Windows "Enhance pointer precision", desktop acceleration).
+    `rehomeOnClick` (default true here) starts each new press from the corner
+    again, so clicks land where shown despite drift, with a visible jump.
+  - `"model": "divided"`: each report moves `step` pixels for every whole
+    `divisor` counts and `small` pixels when it is nonzero but below the
+    divisor. Measured on the ASUS PRIME Z270-P UEFI setup (AMI): `screen`
+    [1024, 768], `divisor` 8, `step` 12, `small` 3. The pointer then lands
+    within 3 of those pixels of the target, with no drift over long drags.
+    `rehomeOnClick` defaults to false.
+  - The settings fit one environment. A computer that boots from UEFI setup
+    into an OS with a different pointer response needs `physical.json` changed
+    and the agent restarted.
 - QEMU key names from the viewer are mapped to USB HID keyboard usages; keys
   without a mapping are ignored.
 - The session is authenticated but not encrypted. Keep the dongle and the agent

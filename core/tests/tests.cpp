@@ -667,7 +667,7 @@ static void testS2Kvm() {
     sx += dx;
     sy += dy;
   }
-  CHECK(homes == 12 && sx == 999 && sy == 250);  // ceil(1000/127) + 4 homing steps
+  CHECK(homes == 11 && sx == 999 && sy == 250);  // ceil(1000/127) + 3 homing steps
   // A click re-homes first (pointer acceleration drifts), then presses and releases.
   device->apply(inputEvents(Json::parse(R"([{"type":"btn","data":{"button":"left","down":true}},{"type":"btn","data":{"button":"left","down":false}},
     {"type":"btn","data":{"button":"wheel-down","down":true}},{"type":"btn","data":{"button":"wheel-down","down":false}}])")));
@@ -686,6 +686,38 @@ static void testS2Kvm() {
   usleep(2300000);
   auto held = dongle.take();
   CHECK(held.size() >= 2 && held[0] == "down 224" && held[1] == "mouse 0 0 0 0 0");
+  // Divided model (AMI/ASUS UEFI): whole steps per 8 counts, 3 px for a small report.
+  device.reset();
+  dongle.take();
+  Json divided = config;
+  divided.set("screen", Json::Array{Json(1024), Json(768)});
+  divided.set("pointer", obj({{"model", "divided"}, {"divisor", 8}, {"step", 12}, {"small", 3}}));
+  auto bios = makeHidDevice(divided);
+  auto travel = [](int c) { return std::abs(c) >= 8 ? (c < 0 ? -1 : 1) * std::abs(c) / 8 * 12 : (c > 0 ? 3 : c < 0 ? -3 : 0); };
+  auto measure = [&](const std::vector<std::string>& got, int& px, int& py, int& homing) {
+    for (const auto& line : got) {
+      int dx, dy, w, p, b;
+      if (sscanf(line.c_str(), "mouse %d %d %d %d %d", &dx, &dy, &w, &p, &b) != 5) continue;
+      CHECK(std::abs(dx) <= 127 && std::abs(dy) <= 127);
+      if (dx == -127 && dy == -127) { homing++; px = py = 0; continue; }
+      px += travel(dx);
+      py += travel(dy);
+    }
+  };
+  int px = 0, py = 0, homing = 0;
+  bios->apply(inputEvents(Json::parse(R"([{"type":"abs","data":{"axis":"x","value":32767}},{"type":"abs","data":{"axis":"y","value":16384}}])")));
+  measure(dongle.take(), px, py, homing);
+  CHECK(homing == 9 && px == 1023 && py == 384);  // ceil(1024 / 180 per report) + 3
+  bios->apply(inputEvents(Json::parse(R"([{"type":"abs","data":{"axis":"x","value":100}},{"type":"abs","data":{"axis":"y","value":32767}}])")));
+  measure(dongle.take(), px, py, homing);
+  CHECK(homing == 9 && px == 3 && py == 768);  // 383 px down rounds to 32 whole steps
+  bios->apply(inputEvents(Json::parse(R"([{"type":"abs","data":{"axis":"y","value":0}}])")));
+  measure(dongle.take(), px, py, homing);
+  CHECK(py == 0);  // tracking clamped to 767 at the edge, so the way back is exact
+  // Without rehomeOnClick (the divided default) a click does not jump to the corner.
+  bios->apply(inputEvents(Json::parse(R"([{"type":"btn","data":{"button":"left","down":true}},{"type":"btn","data":{"button":"left","down":false}}])")));
+  CHECK((dongle.take() == std::vector<std::string>{"mouse 0 0 0 0 1", "mouse 0 0 0 0 0"}));
+  bios.reset();
   // A wrong key is rejected by the dongle and reported, not retried forever.
   device.reset();
   writeFileAtomic(root + "/kvm.key", std::string(64, 'a') + "\n");
