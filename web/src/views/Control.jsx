@@ -3,7 +3,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useShell } from "../App.jsx";
 import { api, vmUrl, viewerUrl } from "../lib/api.js";
-import { Frame } from "../lib/Frame.jsx";
+import { Frame, FrameIndicator } from "../lib/Frame.jsx";
+import { consoleState } from "../lib/frame-state.js";
 import { LiveConsole } from "../lib/LiveConsole.jsx";
 import { keepAudio, toggleAudio, useAudio } from "../lib/audio-store.js";
 import { bindMonitorControl } from "../lib/monitor-control.js";
@@ -49,6 +50,7 @@ function ControlVm({ vm, viewOnly, initiallyLive }) {
   const [records, setRecords] = useState([]);
   const [saved, setSaved] = useState(null);
   const [frames, setFrames] = useState({});
+  const [headStates, setHeadStates] = useState({});
   const [liveStatus, setLiveStatus] = useState("");
   const monitorsRef = useRef(null);
   const controlButton = useRef(null);
@@ -222,9 +224,11 @@ function ControlVm({ vm, viewOnly, initiallyLive }) {
           {Array.from({ length: vm.heads }, (_, head) => {
             const onConsole = head === 0 && liveOn;
             const frame = frames[head];
+            const state = !isActive(vm) ? "offline" : onConsole ? consoleState(liveStatus) : headStates[head] || "stale";
             return (
               <article className="monitor" key={head}>
                 <header>
+                  <FrameIndicator state={state} detail={onConsole ? liveStatus : isActive(vm) ? "per-head capture" : vm.state} />
                   <strong>Display {head + 1}</strong>
                   <Bandwidth scope={vm.key + "/" + head} />
                   <span className="resolution">{frame && !onConsole ? `${frame.width} × ${frame.height}` : `Head ${head}`}</span>
@@ -255,6 +259,7 @@ function ControlVm({ vm, viewOnly, initiallyLive }) {
                       onFrame={(width, height) =>
                         setFrames((old) => ({ ...old, [head]: { width, height, time: new Date().toLocaleTimeString() } }))
                       }
+                      onState={(next) => setHeadStates((old) => (old[head] === next ? old : { ...old, [head]: next }))}
                     />
                   ) : (
                     <div className="off-screen">{vm.state === "shut off" ? "Powered off" : vm.state}</div>

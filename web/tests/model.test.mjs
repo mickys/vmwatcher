@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { byState, canLive, liveNote, monitorsOf, parseKeys, rowsFor, wallGrid } from "../src/lib/model.js";
 import { qcode } from "../src/lib/monitor-control.js";
 import { decodePcm } from "../src/lib/audio-player.js";
+import { HOLD_BLANK_MS, acceptFrame, consoleState, frameState, isBlank, staleAfter } from "../src/lib/frame-state.js";
 
 test("the wall picks the grid that shows the most picture", () => {
   assert.deepEqual(wallGrid([16 / 9], 1600, 900), { columns: 1, rows: 1 });
@@ -51,4 +52,38 @@ test("PCM packets decode to per-channel samples", () => {
   assert.deepEqual([...left], [0.5, 0]);
   assert.ok(Math.abs(right[0] + 0.5) < 1e-6 && right[1] > 0.99);
   assert.throws(() => decodePcm(new ArrayBuffer(3), 2));
+});
+
+test("brief black captures keep the last good picture", () => {
+  assert.equal(isBlank(new Uint8ClampedArray([0, 0, 0, 255, 7, 7, 7, 255])), true);
+  assert.equal(isBlank(new Uint8ClampedArray([0, 0, 0, 255, 40, 0, 0, 255])), false);
+  const memory = {};
+  assert.equal(acceptFrame(memory, true, 0), true); // nothing shown yet: show even a blank
+  assert.equal(acceptFrame(memory, false, 1000), true);
+  assert.equal(acceptFrame(memory, true, 2000), false); // one black frame between pictures is skipped
+  assert.equal(acceptFrame(memory, false, 3000), true);
+  // A display that stays black is shown once it has been black for two captures and the hold time.
+  assert.equal(acceptFrame(memory, true, 4000), false);
+  assert.equal(acceptFrame(memory, true, 5000), false);
+  assert.equal(acceptFrame(memory, true, 4000 + HOLD_BLANK_MS), true);
+  assert.equal(acceptFrame(memory, true, 5000 + HOLD_BLANK_MS), true);
+  // Slow previews: two captures 30 s apart both black is real.
+  const slow = { shown: "picture" };
+  assert.equal(acceptFrame(slow, true, 0), false);
+  assert.equal(acceptFrame(slow, true, 30000), true);
+});
+
+test("frame state is live, stale or offline", () => {
+  const base = { failed: false, held: false, lastFresh: 1000, delay: 30000 };
+  assert.equal(frameState({ ...base, now: 2000 }), "live");
+  assert.equal(frameState({ ...base, now: 1000 + staleAfter(30000) + 1 }), "stale");
+  assert.equal(frameState({ ...base, held: true, now: 2000 }), "stale");
+  assert.equal(frameState({ ...base, failed: true, now: 2000 }), "offline");
+  assert.equal(frameState({ ...base, lastFresh: 0, now: 2000 }), "stale"); // first frame still loading
+  assert.equal(frameState({ ...base, delay: 0, now: 12000 }), "stale"); // previews paused
+  assert.equal(consoleState("LIVE · VIEW ONLY"), "live");
+  assert.equal(consoleState("Connecting…"), "stale");
+  assert.equal(consoleState("Disconnected · reconnecting"), "stale");
+  assert.equal(consoleState("Playback unavailable"), "offline");
+  assert.equal(consoleState("Disconnected · toggle live to retry"), "offline");
 });

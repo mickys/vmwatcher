@@ -3,10 +3,14 @@ import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useStat
 import { createPortal } from "react-dom";
 import { useShell } from "../App.jsx";
 import { api, vmUrl } from "../lib/api.js";
-import { Frame } from "../lib/Frame.jsx";
+import { Frame, FrameIndicator } from "../lib/Frame.jsx";
+import { consoleState } from "../lib/frame-state.js";
 import { LiveConsole } from "../lib/LiveConsole.jsx";
 import { keepAudio, toggleAudio, useAudio } from "../lib/audio-store.js";
 import { byState, canLive, isActive, liveNote, monitorsOf, parseKeys, wallGrid } from "../lib/model.js";
+
+// Height of the toolbar above each tile's picture (--tile-bar in style.css).
+const TILE_BAR = 30;
 
 const stored = (name, legacy) => new Set(parseKeys(localStorage.getItem(name) ?? (legacy ? localStorage.getItem(legacy) : null)));
 
@@ -128,11 +132,11 @@ export function Wall() {
   const aspectOf = (vm) => shapes.get(vm.key)?.aspect || (16 / 9) * (isActive(vm) ? Math.min(vm.heads, 4) : 1);
   const fitColumns = [1, 2, 3, 4].includes(layout?.fit) ? layout.fit : 0;
   const fitWidth = !!layout?.fit;
-  const widthColumns = Math.max(1, Math.floor((size.width + 6) / (320 + 6)));
-  const columns = Math.min(fitWidth ? fitColumns || widthColumns : 0, shown.length);
+  // Fit to screen with automatic columns uses the best-fitting grid, like the default layout.
+  const columns = Math.min(fitWidth ? fitColumns : 0, shown.length);
   const grid = columns
     ? { columns, rows: Math.ceil(shown.length / columns) }
-    : wallGrid(shown.map(aspectOf), size.width, size.height);
+    : wallGrid(shown.map(aspectOf), size.width, size.height, 6, TILE_BAR);
   const hasSavedSizes = shown.some((vm) => layout?.sizes?.[vm.key] || layout?.spans?.[vm.key] > 1);
   const customSize = !fitWidth && (!!resizing || hasSavedSizes);
   const autoWidth = Math.max(1, (size.width - (grid.columns - 1) * 6) / grid.columns);
@@ -142,8 +146,8 @@ export function Wall() {
     if (layout?.sizes?.[vm.key]) return layout.sizes[vm.key];
     if (!customSize) return null;
     const span = layout?.spans?.[vm.key] || 1;
-    const width = Math.min(autoWidth, autoHeight * aspectOf(vm)) * span;
-    return { width, height: width / aspectOf(vm) };
+    const width = Math.min(autoWidth, Math.max(1, autoHeight - TILE_BAR) * aspectOf(vm)) * span;
+    return { width, height: width / aspectOf(vm) + TILE_BAR };
   };
 
   const onShape = useCallback((key, width, height) => {
@@ -494,6 +498,8 @@ const Card = memo(function Card({
   onMoveStart, onMove, previous, next, dimensions, columnWidth, columns, onResize, onResizeEnd,
 }) {
   const [status, setStatus] = useState("preview");
+  const [previewState, setPreviewState] = useState("stale");
+  const frameState = !isActive(vm) ? "offline" : live ? consoleState(status) : previewState;
   const resize = useRef(null);
 
   function resizedBox(box, edge, dx, dy, wallWidth) {
@@ -539,11 +545,12 @@ const Card = memo(function Card({
     ? Math.min(columns, Math.ceil((dimensions.width + 6) / (columnWidth + 6)))
     : 1;
   return (
-    <article className="card" data-tile-key={vm.key}
+    <article className={"card" + (dimensions ? " sized" : "")} data-tile-key={vm.key}
       style={{ "--card-aspect": aspect, width: dimensions?.width, height: dimensions?.height,
         gridColumn: span > 1 ? `span ${span}` : undefined }}>
       <header>
         <span className={"dot " + vm.state} title={vm.state} />
+        <FrameIndicator state={frameState} detail={isActive(vm) ? (live ? status : "preview") : vm.state} />
         <a className="vm-name" href={control} title={title}>
           {vm.name}
         </a>
@@ -613,6 +620,7 @@ const Card = memo(function Card({
             sized
             alt={vm.name + " display previews"}
             onFrame={(width, height) => onShape(vm.key, width, height)}
+            onState={setPreviewState}
           />
         ) : (
           <div className="off-screen">{vm.state === "shut off" ? "Powered off" : vm.state}</div>

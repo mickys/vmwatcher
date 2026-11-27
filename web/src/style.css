@@ -274,10 +274,11 @@ select:focus-visible {
 }
 .card {
   place-self: center;
-  width: min(100%, calc((100cqh - (var(--wall-rows, 1) - 1) * 6px) / var(--wall-rows, 1) * var(--card-aspect, 1.777778)));
+  /* The picture keeps its aspect ratio; the toolbar adds --tile-bar above it. */
+  --tile-bar: 30px;
+  width: min(100%, calc(((100cqh - (var(--wall-rows, 1) - 1) * 6px) / var(--wall-rows, 1) - var(--tile-bar)) * var(--card-aspect, 1.777778)));
   height: auto;
   max-height: 100%;
-  aspect-ratio: var(--card-aspect, 16 / 9);
   min-width: 0;
   min-height: 0;
   border: 1px solid #b9c5d0;
@@ -290,44 +291,68 @@ select:focus-visible {
 .card {
   position: relative;
 }
+/* Fit to screen: the chosen columns, with every row fitting the wall's height.
+   Only tiles resized beyond their cell make it scroll. */
 .wall.fit-width {
-  grid-template-rows: none;
-  grid-auto-rows: max-content;
-  align-content: start;
   overflow-y: auto;
 }
-.wall.fit-width .card {
+.wall.fit-width .card.sized {
   place-self: start;
-  width: 100%;
   max-width: 100%;
   max-height: none;
 }
-/* The tile toolbar floats over the top of the image and only shows while the
-   pointer (or keyboard focus) is on the tile, so it costs no height. */
+/* The tile toolbar sits above the picture. */
 .card header {
-  position: absolute;
-  z-index: 2;
-  inset: 0 0 auto 0;
+  flex: none;
   display: flex;
   align-items: center;
   gap: 6px;
   padding: 0 4px 0 8px;
-  height: 30px;
-  background: rgb(255 255 255 / 60%);
-  opacity: 0;
-  pointer-events: none;
-  transition: opacity 0.12s;
+  height: var(--tile-bar);
+  box-sizing: border-box;
+  background: #eef2f6;
+  border-bottom: 1px solid #d3dce5;
 }
-.card:hover header,
-.card:focus-within header {
-  opacity: 1;
-  pointer-events: auto;
+.card > .card-screen {
+  flex: none;
+  aspect-ratio: var(--card-aspect, 16 / 9);
 }
-@media (hover: none) {
-  .card header {
-    opacity: 1;
-    pointer-events: auto;
-  }
+/* Tiles with a set width and height give the picture whatever is left. */
+.wall.custom-size .card > .card-screen,
+.card.sized > .card-screen {
+  flex: 1;
+  aspect-ratio: auto;
+}
+/* Picture freshness: green live, orange stale, red offline. */
+.frame-state {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 6px 1px 5px;
+  border-radius: 9px;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 16px;
+  color: #fff;
+  white-space: nowrap;
+}
+.frame-state::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  box-shadow: 0 0 0 1.5px rgb(255 255 255 / 85%);
+}
+.frame-state.live {
+  background: #1d8a4f;
+}
+.frame-state.stale {
+  background: #c9700f;
+}
+.frame-state.offline {
+  background: #c23a2b;
 }
 .card header button:not(.vm-name) {
   font-size: 12px;

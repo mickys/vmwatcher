@@ -142,6 +142,9 @@ test("first run, wall, control and settings", async () => {
   assert.ok(server.calls.some((call) => call.path === `/api/hosts/local/vms/${id(1)}/preview.png`));
   assert.match(alpha.querySelector(".card-status").textContent, /hypervisor · 2 monitors · preview/);
   assert.match($$(".card").find((card) => card.textContent.includes("beta")).textContent, /Powered off/);
+  // Every tile shows its picture state: fetched previews are live, a powered-off VM is offline.
+  assert.equal(alpha.querySelector(".frame-state").className, "frame-state live");
+  assert.equal($$(".card").find((card) => card.textContent.includes("beta")).querySelector(".frame-state").textContent, "Offline");
   const gamma = $$(".card").find((card) => card.textContent.includes("gamma"));
   const liveButton = [...gamma.querySelectorAll("button")].find((button) => button.textContent === "Live");
   assert.ok(liveButton.disabled && liveButton.title === "needs the agent");

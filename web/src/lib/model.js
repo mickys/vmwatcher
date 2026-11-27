@@ -35,12 +35,13 @@ export function rowsFor(spans, columns) {
 }
 
 // Pick the grid that displays the most image area, using actual monitor ratios.
-export function wallGrid(aspects, width, height, gap = 6) {
+// `bar` is the height each tile spends on its toolbar above the picture.
+export function wallGrid(aspects, width, height, gap = 6, bar = 0) {
   let best = { columns: 1, rows: Math.max(1, aspects.length) }, area = -1;
   for (let columns = 1; columns <= aspects.length; columns++) {
     const rows = Math.ceil(aspects.length / columns);
     const cellWidth = Math.max(0, (width - gap * (columns - 1)) / columns);
-    const cellHeight = Math.max(0, (height - gap * (rows - 1)) / rows);
+    const cellHeight = Math.max(0, (height - gap * (rows - 1)) / rows - bar);
     const shown = aspects.reduce((sum, aspect) => {
       const w = Math.min(cellWidth, cellHeight * aspect);
       return sum + w * w / aspect;
